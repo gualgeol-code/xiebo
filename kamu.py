@@ -6,8 +6,7 @@ import math
 from datetime import datetime
 import csv
 import threading
-from queue import Queue
-import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Konfigurasi file log
 LOG_FILE = "logbatch.txt"
@@ -344,15 +343,15 @@ def parse_xiebo_output(output_text):
     
     return found_info
 
-def run_xiebo_single_gpu(gpu_id, start_hex, range_bits, address, batch_id=None):
-    """Run xiebo binary untuk single GPU"""
+def run_xiebo_single_batch(gpu_id, start_hex, range_bits, address, batch_id=None):
+    """Run xiebo binary untuk single GPU dengan batch tertentu"""
     global STOP_SEARCH_FLAG
     
     cmd = ["./xiebo", "-gpuId", str(gpu_id), "-start", start_hex, 
            "-range", str(range_bits), address]
     
     print(f"\n{'='*60}")
-    print(f"GPU {gpu_id}: Running {' '.join(cmd)}")
+    print(f"GPU {gpu_id} Batch {batch_id if batch_id is not None else 'N/A'}: Running {' '.join(cmd)}")
     print(f"{'='*60}")
     
     try:
@@ -372,7 +371,7 @@ def run_xiebo_single_gpu(gpu_id, start_hex, range_bits, address, batch_id=None):
             update_batch_log(batch_info)
         
         # Jalankan xiebo dan tampilkan output secara real-time
-        print(f"\n📤 GPU {gpu_id}: Starting xiebo process...\n")
+        print(f"\n📤 GPU {gpu_id} Batch {batch_id if batch_id is not None else 'N/A'}: Starting xiebo process...\n")
         print(f"{'-'*60}")
         
         # Gunakan Popen untuk mendapatkan output real-time
@@ -427,7 +426,7 @@ def run_xiebo_single_gpu(gpu_id, start_hex, range_bits, address, batch_id=None):
         
         # Tampilkan hasil pencarian
         print(f"\n{'='*60}")
-        print(f"🔍 GPU {gpu_id}: SEARCH RESULT")
+        print(f"🔍 GPU {gpu_id} Batch {batch_id if batch_id is not None else 'N/A'}: SEARCH RESULT")
         print(f"{'='*60}")
         
         if found_info['found_count'] > 0:
@@ -460,7 +459,7 @@ def run_xiebo_single_gpu(gpu_id, start_hex, range_bits, address, batch_id=None):
         return return_code, found_info
         
     except KeyboardInterrupt:
-        print(f"\n\n⚠️ GPU {gpu_id}: Stopped by user")
+        print(f"\n\n⚠️ GPU {gpu_id} Batch {batch_id if batch_id is not None else 'N/A'}: Stopped by user")
         
         # Update status jika batch diinterupsi
         if batch_id is not None:
@@ -480,7 +479,7 @@ def run_xiebo_single_gpu(gpu_id, start_hex, range_bits, address, batch_id=None):
         return 130, {'found': False}
     except Exception as e:
         error_msg = str(e)
-        print(f"\n❌ GPU {gpu_id}: Error: {error_msg}")
+        print(f"\n❌ GPU {gpu_id} Batch {batch_id if batch_id is not None else 'N/A'}: Error: {error_msg}")
         
         # Update status error jika ada batch_id
         if batch_id is not None:
@@ -499,174 +498,75 @@ def run_xiebo_single_gpu(gpu_id, start_hex, range_bits, address, batch_id=None):
         
         return 1, {'found': False}
 
-def run_xiebo_multi_gpu(gpu_ids, start_hex, range_bits, address, batch_id=None):
-    """Run xiebo binary untuk multi GPU"""
+def run_parallel_batches(gpu_ids, batch_infos, address):
+    """Menjalankan multiple batch secara paralel di GPU yang berbeda"""
     global STOP_SEARCH_FLAG
     
-    # Buat command dengan semua GPU IDs
-    gpu_id_args = []
-    for gpu_id in gpu_ids:
-        gpu_id_args.extend(["-gpuId", str(gpu_id)])
+    results = []
     
-    cmd = ["./xiebo"] + gpu_id_args + ["-start", start_hex, 
-           "-range", str(range_bits), address]
-    
-    print(f"\n{'='*60}")
-    print(f"Multi-GPU {gpu_ids}: Running {' '.join(cmd)}")
-    print(f"{'='*60}")
-    
-    try:
-        # Update status menjadi inprogress jika ada batch_id
-        if batch_id is not None:
-            batch_info = {
-                'batch_id': str(batch_id),
-                'start_hex': start_hex,
-                'range_bits': str(range_bits),
-                'address_target': address,
-                'status': 'inprogress',
-                'found': '',
-                'wif': '',
-                'state_info': '',
-                'gpu_id': ','.join(map(str, gpu_ids))
-            }
-            update_batch_log(batch_info)
+    # Gunakan ThreadPoolExecutor untuk menjalankan batch secara paralel
+    with ThreadPoolExecutor(max_workers=len(gpu_ids)) as executor:
+        # Submit semua batch ke executor
+        future_to_batch = {}
         
-        # Jalankan xiebo dan tampilkan output secara real-time
-        print(f"\n📤 Multi-GPU {gpu_ids}: Starting xiebo process...\n")
-        print(f"{'-'*60}")
-        
-        # Gunakan Popen untuk mendapatkan output real-time
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            universal_newlines=True
-        )
-        
-        # Tampilkan output secara real-time
-        output_lines = []
-        while True:
-            output_line = process.stdout.readline()
-            if output_line == '' and process.poll() is not None:
+        for i, batch_info in enumerate(batch_infos):
+            if STOP_SEARCH_FLAG:
+                print(f"🚨 Skipping remaining batches due to STOP_SEARCH_FLAG")
                 break
-            if output_line:
-                # Tampilkan output dengan format yang lebih baik
-                stripped_line = output_line.strip()
-                if stripped_line:
-                    print(f"   GPU {gpu_ids}: {stripped_line}")
-                output_lines.append(output_line)
-        
-        # Tunggu proses selesai
-        return_code = process.wait()
-        output_text = ''.join(output_lines)
-        
-        # Parse output untuk mencari private key
-        found_info = parse_xiebo_output(output_text)
-        
-        # Update status berdasarkan hasil
-        if batch_id is not None:
-            batch_info['status'] = 'done'
-            
-            # Tentukan nilai 'found' berdasarkan found_count atau found status
-            if found_info['found_count'] > 0:
-                batch_info['found'] = 'YES'
-            elif found_info['found']:
-                batch_info['found'] = 'YES'
-            else:
-                batch_info['found'] = 'NO'
-            
-            # Simpan WIF key ke kolom wif (60 karakter pertama)
-            if found_info['wif_key']:
-                batch_info['wif'] = found_info['wif_key'][:60]
-            else:
-                batch_info['wif'] = ''
                 
-            update_batch_log(batch_info)
-        
-        # Tampilkan hasil pencarian
-        print(f"\n{'='*60}")
-        print(f"🔍 Multi-GPU {gpu_ids}: SEARCH RESULT")
-        print(f"{'='*60}")
-        
-        if found_info['found_count'] > 0:
-            print(f"✅ Multi-GPU {gpu_ids}: FOUND {found_info['found_count']} PRIVATE KEY(S)!")
-        elif found_info['found']:
-            print(f"✅ Multi-GPU {gpu_ids}: PRIVATE KEY FOUND!")
-        else:
-            print(f"❌ Multi-GPU {gpu_ids}: Private key not found in this batch")
-        
-        if found_info['speed_info']:
-            print(f"\n📊 Multi-GPU {gpu_ids}: {found_info['speed_info']}")
-        
-        if found_info['found'] or found_info['found_count'] > 0:
-            print(f"\n📋 Multi-GPU {gpu_ids}: Found information:")
-            if found_info['raw_output']:
-                for line in found_info['raw_output'].split('\n'):
-                    print(f"   Multi-GPU {gpu_ids}: {line}")
-            else:
-                if found_info['private_key_hex']:
-                    print(f"   Multi-GPU {gpu_ids}: Priv (HEX): {found_info['private_key_hex']}")
-                if found_info['private_key_wif']:
-                    print(f"   Multi-GPU {gpu_ids}: Priv (WIF): {found_info['private_key_wif']}")
-                if found_info['address']:
-                    print(f"   Multi-GPU {gpu_ids}: Address: {found_info['address']}")
-                if found_info['wif_key']:
-                    print(f"   Multi-GPU {gpu_ids}: WIF Key (first 60 chars): {found_info['wif_key']}")
-        
-        print(f"{'='*60}")
-        
-        return return_code, found_info
-        
-    except KeyboardInterrupt:
-        print(f"\n\n⚠️ Multi-GPU {gpu_ids}: Stopped by user")
-        
-        # Update status jika batch diinterupsi
-        if batch_id is not None:
-            batch_info = {
-                'batch_id': str(batch_id),
-                'start_hex': start_hex,
-                'range_bits': str(range_bits),
-                'address_target': address,
-                'status': 'interrupted',
-                'found': '',
-                'wif': '',
-                'state_info': '',
-                'gpu_id': ','.join(map(str, gpu_ids))
+            gpu_id = gpu_ids[i % len(gpu_ids)]  # Round-robin assignment
+            batch_start_hex = batch_info['start_hex']
+            batch_bits = batch_info['bits']
+            batch_id = batch_info['batch_id']
+            
+            print(f"\n📋 Scheduling Batch {batch_id} on GPU {gpu_id}")
+            print(f"   Start: 0x{batch_start_hex}")
+            print(f"   Bits: {batch_bits}")
+            
+            # Submit batch untuk dieksekusi
+            future = executor.submit(
+                run_xiebo_single_batch,
+                gpu_id, batch_start_hex, batch_bits, address, batch_id
+            )
+            future_to_batch[future] = {
+                'gpu_id': gpu_id,
+                'batch_id': batch_id,
+                'batch_info': batch_info
             }
-            update_batch_log(batch_info)
         
-        return 130, {'found': False}
-    except Exception as e:
-        error_msg = str(e)
-        print(f"\n❌ Multi-GPU {gpu_ids}: Error: {error_msg}")
-        
-        # Update status error jika ada batch_id
-        if batch_id is not None:
-            batch_info = {
-                'batch_id': str(batch_id),
-                'start_hex': start_hex,
-                'range_bits': str(range_bits),
-                'address_target': address,
-                'status': 'error',
-                'found': '',
-                'wif': '',
-                'state_info': '',
-                'gpu_id': ','.join(map(str, gpu_ids))
-            }
-            update_batch_log(batch_info)
-        
-        return 1, {'found': False}
-
-def run_xiebo(gpu_ids, start_hex, range_bits, address, batch_id=None):
-    """Run xiebo binary dengan dukungan single atau multi GPU"""
-    if isinstance(gpu_ids, int):
-        return run_xiebo_single_gpu(gpu_ids, start_hex, range_bits, address, batch_id)
-    elif isinstance(gpu_ids, list) and len(gpu_ids) == 1:
-        return run_xiebo_single_gpu(gpu_ids[0], start_hex, range_bits, address, batch_id)
-    else:
-        return run_xiebo_multi_gpu(gpu_ids, start_hex, range_bits, address, batch_id)
+        # Tunggu dan kumpulkan hasil
+        for future in as_completed(future_to_batch):
+            if STOP_SEARCH_FLAG:
+                # Batalkan semua future yang belum selesai
+                for f in future_to_batch.keys():
+                    if not f.done():
+                        f.cancel()
+                break
+                
+            batch_data = future_to_batch[future]
+            try:
+                return_code, found_info = future.result()
+                results.append({
+                    'gpu_id': batch_data['gpu_id'],
+                    'batch_id': batch_data['batch_id'],
+                    'return_code': return_code,
+                    'found_info': found_info
+                })
+                
+                # Cek jika ditemukan private key
+                if found_info.get('found_count', 0) > 0 or found_info.get('found', False):
+                    print(f"\n🚨 PRIVATE KEY FOUND in Batch {batch_data['batch_id']} on GPU {batch_data['gpu_id']}!")
+                
+            except Exception as e:
+                print(f"❌ Error in parallel execution for Batch {batch_data['batch_id']} on GPU {batch_data['gpu_id']}: {e}")
+                results.append({
+                    'gpu_id': batch_data['gpu_id'],
+                    'batch_id': batch_data['batch_id'],
+                    'return_code': 1,
+                    'found_info': {'found': False, 'error': str(e)}
+                })
+    
+    return results
 
 def calculate_range_bits(keys_count):
     """Fungsi baru: Menghitung range bits yang benar untuk jumlah keys tertentu"""
@@ -735,7 +635,7 @@ def initialize_batch_log(start_hex, range_bits, address, gpu_ids, num_batches, b
             'found': '',
             'wif': '',
             'state_info': '',
-            'gpu_id': ','.join(map(str, gpu_ids)) if isinstance(gpu_ids, list) else str(gpu_ids)
+            'gpu_id': ''  # Akan diisi saat dijalankan
         }
         
         # Hanya tambah jika belum ada
@@ -844,7 +744,140 @@ def parse_gpu_ids(gpu_str):
     if not gpu_ids:
         gpu_ids = [0]
     
+    # Urutkan dan hapus duplikat
+    gpu_ids = sorted(list(set(gpu_ids)))
+    
     return gpu_ids
+
+def run_xiebo_parallel_mode(gpu_ids, start_hex, range_bits, address, num_batches_to_run, start_batch_id=0):
+    """Mode paralel: Setiap GPU memproses batch yang berbeda"""
+    global STOP_SEARCH_FLAG, BATCH_SIZE
+    
+    start_int = int(start_hex, 16)
+    total_keys = 1 << range_bits
+    end_int = start_int + total_keys - 1
+    
+    total_batches_needed = math.ceil(total_keys / BATCH_SIZE)
+    
+    print(f"\n{'='*60}")
+    print(f"PARALLEL EXECUTION MODE")
+    print(f"{'='*60}")
+    print(f"GPU IDs: {gpu_ids}")
+    print(f"Total GPUs: {len(gpu_ids)}")
+    print(f"Start batch ID: {start_batch_id}")
+    print(f"Batches to run: {num_batches_to_run}")
+    print(f"Parallel execution: YES (each GPU processes separate batches)")
+    print(f"{'='*60}")
+    
+    # Siapkan batch untuk dieksekusi
+    batch_infos = []
+    for i in range(num_batches_to_run):
+        if STOP_SEARCH_FLAG:
+            break
+            
+        batch_id = start_batch_id + i
+        if batch_id >= total_batches_needed:
+            break
+            
+        batch_start = start_int + (batch_id * BATCH_SIZE)
+        batch_end = min(batch_start + BATCH_SIZE, end_int + 1)
+        batch_keys = batch_end - batch_start
+        
+        batch_bits = calculate_range_bits(batch_keys)
+        batch_hex = format(batch_start, 'x')
+        
+        batch_infos.append({
+            'batch_id': batch_id,
+            'start_hex': batch_hex,
+            'bits': batch_bits,
+            'keys': batch_keys
+        })
+    
+    if not batch_infos:
+        print("❌ No batches to run")
+        return []
+    
+    print(f"\n📋 Prepared {len(batch_infos)} batches for parallel execution")
+    
+    # Jalankan batch secara paralel
+    results = run_parallel_batches(gpu_ids, batch_infos, address)
+    
+    return results
+
+def run_xiebo_sequential_mode(gpu_ids, start_hex, range_bits, address, num_batches_to_run, start_batch_id=0):
+    """Mode sequential: Batch dijalankan satu per satu (untuk single GPU atau debugging)"""
+    global STOP_SEARCH_FLAG, BATCH_SIZE
+    
+    start_int = int(start_hex, 16)
+    total_keys = 1 << range_bits
+    end_int = start_int + total_keys - 1
+    
+    total_batches_needed = math.ceil(total_keys / BATCH_SIZE)
+    
+    print(f"\n{'='*60}")
+    print(f"SEQUENTIAL EXECUTION MODE")
+    print(f"{'='*60}")
+    print(f"GPU IDs: {gpu_ids}")
+    print(f"Start batch ID: {start_batch_id}")
+    print(f"Batches to run: {num_batches_to_run}")
+    print(f"Parallel execution: NO (batches run one by one)")
+    print(f"{'='*60}")
+    
+    results = []
+    
+    for i in range(num_batches_to_run):
+        if STOP_SEARCH_FLAG:
+            print(f"\n🚨 AUTO-STOP TRIGGERED! Stopping remaining batches")
+            break
+            
+        batch_id = start_batch_id + i
+        if batch_id >= total_batches_needed:
+            break
+            
+        batch_start = start_int + (batch_id * BATCH_SIZE)
+        batch_end = min(batch_start + BATCH_SIZE, end_int + 1)
+        batch_keys = batch_end - batch_start
+        
+        batch_bits = calculate_range_bits(batch_keys)
+        batch_hex = format(batch_start, 'x')
+        
+        # Gunakan GPU pertama dalam list untuk sequential mode
+        gpu_id = gpu_ids[0] if gpu_ids else 0
+        
+        print(f"\n{'='*60}")
+        print(f"▶️  BATCH {batch_id+1}/{total_batches_needed} (Sequential {i+1}/{num_batches_to_run})")
+        print(f"{'='*60}")
+        print(f"GPU: {gpu_id}")
+        print(f"Start: 0x{batch_hex}")
+        print(f"Bits: {batch_bits}")
+        print(f"Keys: {batch_keys:,}")
+        
+        return_code, found_info = run_xiebo_single_batch(gpu_id, batch_hex, batch_bits, address, batch_id=batch_id)
+        
+        results.append({
+            'gpu_id': gpu_id,
+            'batch_id': batch_id,
+            'return_code': return_code,
+            'found_info': found_info
+        })
+        
+        if return_code == 0:
+            print(f"✅ Batch {batch_id+1} completed successfully")
+        else:
+            print(f"⚠️  Batch {batch_id+1} exited with code {return_code}")
+        
+        # Tampilkan progress
+        if (i + 1) % 10 == 0 or i == num_batches_to_run - 1:
+            completed_now = start_batch_id + i + 1
+            percentage = (completed_now / total_batches_needed) * 100
+            print(f"\n📈 Overall Progress: {completed_now}/{total_batches_needed} batches ({percentage:.1f}%)")
+        
+        # Delay antara batch
+        if i < num_batches_to_run - 1 and not STOP_SEARCH_FLAG:
+            print(f"\n⏱️  Waiting 5 seconds before next batch...")
+            time.sleep(5)
+    
+    return results
 
 def main():
     global STOP_SEARCH_FLAG, BATCH_SIZE, MAX_BATCHES_PER_RUN
@@ -854,15 +887,16 @@ def main():
     
     # Parse arguments directly
     if len(sys.argv) < 2:
-        print("Xiebo Batch Runner with Multi-GPU Support")
+        print("Xiebo Batch Runner with Multi-GPU Parallel Support")
         print("Usage:")
         print("  Single GPU run: python3 xiebo.py GPU_ID START_HEX RANGE_BITS ADDRESS")
         print("  Multi-GPU run:  python3 xiebo.py GPU_IDS START_HEX RANGE_BITS ADDRESS")
-        print("  Batch run:      python3 xiebo.py --batch GPU_IDS START_HEX RANGE_BITS ADDRESS")
-        print("  Show summary:   python3 xiebo.py --summary")
-        print("  Continue:       python3 xiebo.py --continue")
+        print("  Batch parallel: python3 xiebo.py --parallel GPU_IDS START_HEX RANGE_BITS ADDRESS BATCH_COUNT")
+        print("  Batch sequential: python3 xiebo.py --batch GPU_IDS START_HEX RANGE_BITS ADDRESS")
+        print("  Show summary:    python3 xiebo.py --summary")
+        print("  Continue:        python3 xiebo.py --continue")
         print("\n⚠️  FEATURES:")
-        print("  - Multi-GPU support: e.g., '0 1' for GPU 0 and 1")
+        print("  - Multi-GPU parallel: each GPU processes separate batches")
         print("  - Auto-stop ketika ditemukan Found: 1 atau lebih")
         print(f"  - Maksimal {MAX_BATCHES_PER_RUN} batch per eksekusi")
         print(f"  - Batch size: {BATCH_SIZE:,} keys")
@@ -927,62 +961,43 @@ def main():
         print(f"\nRunning {batches_to_run} batches (max {MAX_BATCHES_PER_RUN} per run)")
         print(f"{remaining_batches} batches remaining in total")
         
-        # Inisialisasi log untuk batch yang akan dijalankan
-        # Tidak perlu save state early karena ini sudah continue mode
-        initialize_batch_log(start_hex, range_bits, address, gpu_ids, batches_to_run, BATCH_SIZE, 
-                           start_batch_id=batches_completed, save_state_early=False)
+        # Tanya user mau mode apa
+        print(f"\n{'='*60}")
+        print("SELECT EXECUTION MODE:")
+        print(f"{'='*60}")
+        print("1. Sequential (one batch at a time)")
+        print("2. Parallel (multiple batches simultaneously)")
+        print(f"{'='*60}")
         
-        # Jalankan batch
-        start_int = int(start_hex, 16)
-        end_int = start_int + (1 << range_bits) - 1
+        choice = input("Enter choice (1 or 2, default: 2): ").strip()
         
-        for i in range(batches_to_run):
-            if STOP_SEARCH_FLAG:
-                print(f"\n{'='*60}")
-                print(f"🚨 AUTO-STOP TRIGGERED!")
-                print(f"{'='*60}")
-                print(f"Pencarian dihentikan karena private key telah ditemukan")
-                break
+        if choice == "1" or len(gpu_ids) == 1:
+            # Sequential mode
+            # Inisialisasi log untuk batch yang akan dijalankan
+            initialize_batch_log(start_hex, range_bits, address, gpu_ids, batches_to_run, BATCH_SIZE, 
+                               start_batch_id=batches_completed, save_state_early=False)
             
-            batch_id = batches_completed + i
-            batch_start = start_int + (i * BATCH_SIZE)
-            batch_end = min(batch_start + BATCH_SIZE, end_int + 1)
-            batch_keys = batch_end - batch_start
+            # Jalankan secara sequential
+            results = run_xiebo_sequential_mode(gpu_ids, start_hex, range_bits, address, 
+                                               batches_to_run, batches_completed)
+        else:
+            # Parallel mode
+            # Inisialisasi log untuk batch yang akan dijalankan
+            initialize_batch_log(start_hex, range_bits, address, gpu_ids, batches_to_run, BATCH_SIZE, 
+                               start_batch_id=batches_completed, save_state_early=False)
             
-            batch_bits = calculate_range_bits(batch_keys)
-            batch_hex = format(batch_start, 'x')
-            
-            # Run this batch
-            print(f"\n{'='*60}")
-            print(f"▶️  BATCH {batch_id+1}/{total_batches} (Continue {i+1}/{batches_to_run})")
-            print(f"{'='*60}")
-            print(f"Start: 0x{batch_hex}")
-            print(f"Bits: {batch_bits}")
-            print(f"Keys: {batch_keys:,}")
-            print(f"GPUs: {gpu_ids}")
-            
-            return_code, found_info = run_xiebo(gpu_ids, batch_hex, batch_bits, address, batch_id=batch_id)
-            
-            if return_code == 0:
-                print(f"✅ Batch {batch_id+1} completed successfully")
-            else:
-                print(f"⚠️  Batch {batch_id+1} exited with code {return_code}")
-            
-            # Tampilkan progress
-            if (i + 1) % 10 == 0 or i == batches_to_run - 1:
-                completed_now = batches_completed + i + 1
-                percentage = (completed_now / total_batches) * 100
-                print(f"\n📈 Overall Progress: {completed_now}/{total_batches} batches ({percentage:.1f}%)")
-            
-            # Delay antara batch
-            if i < batches_to_run - 1 and not STOP_SEARCH_FLAG:
-                print(f"\n⏱️  Waiting 5 seconds before next batch...")
-                time.sleep(5)
+            # Jalankan secara parallel
+            results = run_xiebo_parallel_mode(gpu_ids, start_hex, range_bits, address, 
+                                             batches_to_run, batches_completed)
+        
+        # Hitung berapa batch yang berhasil diselesaikan
+        successful_batches = sum(1 for r in results if r['return_code'] == 0)
+        batches_actually_completed = batches_completed + successful_batches
         
         # Update state untuk batch berikutnya
-        next_batch_id = batches_completed + batches_to_run
-        if next_batch_id < total_batches and not STOP_SEARCH_FLAG:
-            next_start_int = int(start_hex, 16) + (batches_to_run * BATCH_SIZE)
+        if batches_actually_completed < total_batches and not STOP_SEARCH_FLAG:
+            next_batch_id = batches_actually_completed
+            next_start_int = int(start_hex, 16) + (successful_batches * BATCH_SIZE)
             next_start_hex = format(next_start_int, 'x')
             
             # Update state info
@@ -1006,7 +1021,7 @@ def main():
         if STOP_SEARCH_FLAG:
             print(f"🎯 SEARCH STOPPED - PRIVATE KEY FOUND!")
         else:
-            if next_batch_id >= total_batches:
+            if batches_actually_completed >= total_batches:
                 print(f"🎉 ALL BATCHES COMPLETED!")
             else:
                 print(f"⏸️  BATCHES PAUSED - READY FOR NEXT RUN")
@@ -1016,7 +1031,7 @@ def main():
         display_compact_summary()
         sys.exit(0)
     
-    # Single/Multi-GPU run mode (tanpa --batch)
+    # Single/Multi-GPU run mode (tanpa --batch atau --parallel)
     if len(sys.argv) == 5:
         gpu_ids_str = sys.argv[1]
         start_hex = sys.argv[2]
@@ -1029,7 +1044,7 @@ def main():
         if len(gpu_ids) == 1:
             print(f"SINGLE GPU RUN MODE")
         else:
-            print(f"MULTI-GPU RUN MODE")
+            print(f"MULTI-GPU SINGLE BATCH MODE")
         print(f"{'='*60}")
         print(f"GPU IDs: {gpu_ids}")
         print(f"Start: 0x{start_hex}")
@@ -1037,11 +1052,119 @@ def main():
         print(f"Address: {address}")
         print(f"{'='*60}")
         
-        return_code, found_info = run_xiebo(gpu_ids, start_hex, range_bits, address)
+        # Untuk single run, jalankan batch tunggal di GPU pertama
+        gpu_id = gpu_ids[0] if gpu_ids else 0
+        return_code, found_info = run_xiebo_single_batch(gpu_id, start_hex, range_bits, address)
         
         return return_code
     
-    # Batch run mode
+    # Parallel batch mode
+    elif sys.argv[1] == "--parallel" and len(sys.argv) == 7:
+        gpu_ids_str = sys.argv[2]
+        start_hex = sys.argv[3]
+        range_bits = int(sys.argv[4])
+        address = sys.argv[5]
+        try:
+            num_batches_to_run = int(sys.argv[6])
+        except ValueError:
+            print(f"❌ Invalid batch count: {sys.argv[6]}")
+            sys.exit(1)
+        
+        gpu_ids = parse_gpu_ids(gpu_ids_str)
+        
+        # Calculate total
+        start_int = int(start_hex, 16)
+        total_keys = 1 << range_bits
+        end_int = start_int + total_keys - 1
+        
+        total_batches_needed = math.ceil(total_keys / BATCH_SIZE)
+        
+        # Limit to MAX_BATCHES_PER_RUN
+        num_batches_to_run = min(num_batches_to_run, MAX_BATCHES_PER_RUN, total_batches_needed)
+        
+        print(f"\n{'='*60}")
+        print(f"PARALLEL BATCH MODE")
+        print(f"{'='*60}")
+        print(f"GPU IDs: {gpu_ids}")
+        print(f"GPUs: {len(gpu_ids)}")
+        print(f"Start: 0x{start_hex}")
+        print(f"Range: {range_bits} bits")
+        print(f"Total keys: {total_keys:,}")
+        print(f"End: 0x{format(end_int, 'x')}")
+        print(f"Batch size: {BATCH_SIZE:,} keys")
+        print(f"Address: {address}")
+        print(f"Batches to run: {num_batches_to_run}")
+        print(f"Log file: {LOG_FILE} (with state info)")
+        print(f"Next batch file: {NEXT_BATCH_FILE}")
+        print(f"Max batches per run: {MAX_BATCHES_PER_RUN}")
+        print(f"Parallel execution: YES (each GPU processes separate batches)")
+        print(f"State saved: EARLY (at initialization)")
+        print(f"⚠️  AUTO-STOP: Pencarian akan berhenti otomatis jika ditemukan Found: 1 atau lebih")
+        print(f"{'='*60}")
+        
+        # Calculate total batches needed
+        total_batches_needed = math.ceil(total_keys / BATCH_SIZE)
+        
+        print(f"\nTotal batches needed: {total_batches_needed:,}")
+        print(f"Batches to run this session: {num_batches_to_run} (max {MAX_BATCHES_PER_RUN})")
+        
+        if num_batches_to_run < total_batches_needed:
+            print(f"Remaining batches for next run: {total_batches_needed - num_batches_to_run:,}")
+            print(f"⚠️  State will be saved EARLY before running any batches")
+        
+        # ⭐ PERUBAHAN UTAMA: Inisialisasi dan simpan state DI AWAL
+        initialize_batch_log(start_hex, range_bits, address, gpu_ids, num_batches_to_run, BATCH_SIZE, 
+                           start_batch_id=0, save_state_early=True)
+        
+        # Jalankan batch secara parallel
+        results = run_xiebo_parallel_mode(gpu_ids, start_hex, range_bits, address, num_batches_to_run)
+        
+        # Update state info jika sudah menyelesaikan semua batch yang dijadwalkan
+        if num_batches_to_run < total_batches_needed and not STOP_SEARCH_FLAG:
+            # State sudah disimpan di awal, tapi kita update progress-nya
+            next_start_int = start_int + (num_batches_to_run * BATCH_SIZE)
+            next_start_hex = format(next_start_int, 'x')
+            
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            save_next_batch_info(
+                start_hex,
+                range_bits,
+                address,
+                next_start_hex,
+                num_batches_to_run,  # Sekarang sudah selesai
+                total_batches_needed,
+                gpu_ids,
+                timestamp
+            )
+            
+            print(f"\n📝 Updated state with completed progress.")
+            print(f"   Next start: 0x{next_start_hex}")
+            print(f"   Batches completed: {num_batches_to_run}")
+            print(f"   Total batches needed: {total_batches_needed}")
+            print(f"   GPU IDs: {gpu_ids}")
+            print(f"   To continue: python3 xiebo.py --continue")
+        
+        print(f"\n{'='*60}")
+        if STOP_SEARCH_FLAG:
+            print(f"🎯 SEARCH STOPPED - PRIVATE KEY FOUND!")
+        else:
+            if num_batches_to_run >= total_batches_needed:
+                print(f"🎉 ALL BATCHES COMPLETED!")
+            else:
+                print(f"⏸️  BATCHES PAUSED - READY FOR NEXT RUN")
+                print(f"💾 State already saved at initialization")
+        print(f"{'='*60}")
+        
+        # Tampilkan summary ringkas
+        display_compact_summary()
+        
+        # Cek jika ada private key yang ditemukan
+        total_batches_log, found_count, _, _ = get_log_summary()
+        if found_count and found_count > 0:
+            print(f"\n🔥 {found_count} PRIVATE KEY(S) FOUND!")
+            print(f"   Check {LOG_FILE} for batch details and WIF keys")
+        
+    # Sequential batch mode
     elif sys.argv[1] == "--batch" and len(sys.argv) == 6:
         gpu_ids_str = sys.argv[2]
         start_hex = sys.argv[3]
@@ -1055,11 +1178,16 @@ def main():
         total_keys = 1 << range_bits
         end_int = start_int + total_keys - 1
         
+        total_batches_needed = math.ceil(total_keys / BATCH_SIZE)
+        
+        # Limit to MAX_BATCHES_PER_RUN
+        batches_to_run = min(total_batches_needed, MAX_BATCHES_PER_RUN)
+        
         print(f"\n{'='*60}")
         if len(gpu_ids) == 1:
-            print(f"BATCH MODE with SINGLE GPU")
+            print(f"SEQUENTIAL BATCH MODE (SINGLE GPU)")
         else:
-            print(f"BATCH MODE with MULTI-GPU")
+            print(f"SEQUENTIAL BATCH MODE (MULTI-GPU, but running sequentially)")
         print(f"{'='*60}")
         print(f"GPU IDs: {gpu_ids}")
         print(f"Start: 0x{start_hex}")
@@ -1071,15 +1199,10 @@ def main():
         print(f"Log file: {LOG_FILE} (with state info)")
         print(f"Next batch file: {NEXT_BATCH_FILE}")
         print(f"Max batches per run: {MAX_BATCHES_PER_RUN}")
+        print(f"Parallel execution: NO (batches run one by one)")
         print(f"State saved: EARLY (at initialization)")
         print(f"⚠️  AUTO-STOP: Pencarian akan berhenti otomatis jika ditemukan Found: 1 atau lebih")
         print(f"{'='*60}")
-        
-        # Calculate total batches needed
-        total_batches_needed = math.ceil(total_keys / BATCH_SIZE)
-        
-        # Limit to MAX_BATCHES_PER_RUN
-        batches_to_run = min(total_batches_needed, MAX_BATCHES_PER_RUN)
         
         print(f"\nTotal batches needed: {total_batches_needed:,}")
         print(f"Batches to run this session: {batches_to_run} (max {MAX_BATCHES_PER_RUN})")
@@ -1089,56 +1212,11 @@ def main():
             print(f"⚠️  State will be saved EARLY before running any batches")
         
         # ⭐ PERUBAHAN UTAMA: Inisialisasi dan simpan state DI AWAL
-        # Parameter save_state_early=True akan menyimpan state saat inisialisasi
         initialize_batch_log(start_hex, range_bits, address, gpu_ids, batches_to_run, BATCH_SIZE, 
                            start_batch_id=0, save_state_early=True)
         
-        # Run each batch
-        for i in range(batches_to_run):
-            if STOP_SEARCH_FLAG:
-                print(f"\n{'='*60}")
-                print(f"🚨 AUTO-STOP TRIGGERED!")
-                print(f"{'='*60}")
-                print(f"Pencarian dihentikan karena private key telah ditemukan")
-                print(f"Batch yang tersisa ({i+1}/{batches_to_run}) tidak akan dijalankan")
-                print(f"{'='*60}")
-                break
-            
-            batch_start = start_int + (i * BATCH_SIZE)
-            batch_end = min(batch_start + BATCH_SIZE, end_int + 1)
-            batch_keys = batch_end - batch_start
-            
-            batch_bits = calculate_range_bits(batch_keys)
-            batch_hex = format(batch_start, 'x')
-            
-            # Run this batch
-            print(f"\n{'='*60}")
-            print(f"▶️  BATCH {i+1}/{batches_to_run} (Total needed: {total_batches_needed:,})")
-            print(f"{'='*60}")
-            print(f"Start: 0x{batch_hex}")
-            print(f"Bits: {batch_bits}")
-            print(f"Keys: {batch_keys:,}")
-            print(f"GPUs: {gpu_ids}")
-            
-            return_code, found_info = run_xiebo(gpu_ids, batch_hex, batch_bits, address, batch_id=i)
-            
-            if return_code == 0:
-                print(f"✅ Batch {i+1} completed successfully")
-            else:
-                print(f"⚠️  Batch {i+1} exited with code {return_code}")
-            
-            # Tampilkan progress
-            if (i + 1) % 10 == 0 or i == batches_to_run - 1:
-                total_processed = min((i + 1) * BATCH_SIZE, total_keys)
-                percentage_session = ((i + 1) / batches_to_run) * 100
-                percentage_total = (total_processed / total_keys) * 100
-                print(f"\n📈 Progress this session: {i+1}/{batches_to_run} batches ({percentage_session:.1f}%)")
-                print(f"📈 Overall progress: {total_processed:,}/{total_keys:,} keys ({percentage_total:.1f}%)")
-            
-            # Delay antara batch
-            if i < batches_to_run - 1 and not STOP_SEARCH_FLAG:
-                print(f"\n⏱️  Waiting 5 seconds before next batch...")
-                time.sleep(5)
+        # Jalankan batch secara sequential
+        results = run_xiebo_sequential_mode(gpu_ids, start_hex, range_bits, address, batches_to_run)
         
         # Update state info jika sudah menyelesaikan semua batch yang dijadwalkan
         if batches_to_run < total_batches_needed and not STOP_SEARCH_FLAG:
@@ -1189,7 +1267,8 @@ def main():
         print("Invalid arguments")
         print("Usage: python3 xiebo.py GPU_IDS START_HEX RANGE_BITS ADDRESS")
         print("       (GPU_IDS can be single: '0' or multiple: '0 1')")
-        print("Or:    python3 xiebo.py --batch GPU_IDS START_HEX RANGE_BITS ADDRESS")
+        print("Or:    python3 xiebo.py --batch GPU_IDS START_HEX RANGE_BITS ADDRESS (sequential)")
+        print("Or:    python3 xiebo.py --parallel GPU_IDS START_HEX RANGE_BITS ADDRESS BATCH_COUNT")
         print("Or:    python3 xiebo.py --summary")
         print("Or:    python3 xiebo.py --continue")
         return 1
