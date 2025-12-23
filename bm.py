@@ -8,10 +8,12 @@ import csv
 
 # Konfigurasi file log
 LOG_FILE = "logbatch.txt"
+NEXT_BATCH_FILE = "nextbatch.txt"  # File untuk menyimpan start range berikutnya
 DRIVE_MOUNT_PATH = "/content/drive"
 DRIVE_FILE_PATH = "/content/drive/MyDrive/logbatch.txt"
+DRIVE_NEXT_BATCH_PATH = "/content/drive/MyDrive/nextbatch.txt"
 
-# Kolom-kolom untuk tabel log
+# Kolom-kolom untuk tabel log (ditambah kolom state)
 LOG_COLUMNS = [
     'batch_id',
     'start_hex',
@@ -19,8 +21,13 @@ LOG_COLUMNS = [
     'address_target',
     'status',
     'found',
-    'wif'  # Kolom baru untuk menyimpan WIF key
+    'wif',
+    'state_info'  # Kolom baru untuk menyimpan informasi state/next batch
 ]
+
+# Konfigurasi batch
+MAX_BATCHES_PER_RUN = 1000  # Maksimal 1000 batch per eksekusi
+BATCH_SIZE = 2000000000000  # 2 triliun keys per batch
 
 # Global flag untuk menghentikan pencarian
 STOP_SEARCH_FLAG = False
@@ -37,13 +44,17 @@ def save_to_drive():
             if not os.path.exists(os.path.join(DRIVE_MOUNT_PATH, "MyDrive")):
                 drive.mount(DRIVE_MOUNT_PATH, force_remount=False)
             
-            # Salin file
+            # Salin file logbatch.txt
             src = LOG_FILE
             dst = DRIVE_FILE_PATH
-            
             shutil.copy(src, dst)
-        else:
-            pass
+            
+            # Salin file nextbatch.txt jika ada
+            if os.path.exists(NEXT_BATCH_FILE):
+                src_next = NEXT_BATCH_FILE
+                dst_next = DRIVE_NEXT_BATCH_PATH
+                shutil.copy(src_next, dst_next)
+                
     except ImportError:
         pass
     except Exception as e:
@@ -88,6 +99,119 @@ def write_log_from_dict(log_dict):
         
     except Exception as e:
         print(f"❌ Error writing log file: {e}")
+
+def save_next_batch_info(start_hex, range_bits, address, next_start_hex, batches_completed, total_batches, timestamp=None):
+    """Menyimpan informasi batch berikutnya ke file dan log"""
+    try:
+        if timestamp is None:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        info = {
+            'original_start': start_hex,
+            'original_range_bits': str(range_bits),
+            'address': address,
+            'next_start_hex': next_start_hex,
+            'batches_completed': str(batches_completed),
+            'total_batches': str(total_batches),
+            'timestamp': timestamp
+        }
+        
+        # 1. Simpan ke file nextbatch.txt
+        with open(NEXT_BATCH_FILE, 'w') as f:
+            for key, value in info.items():
+                f.write(f"{key}={value}\n")
+        
+        # 2. Tambahkan ke logbatch.txt sebagai entri khusus
+        log_dict = read_log_as_dict()
+        
+        state_info = f"NEXT_BATCH|next_start={next_start_hex}|completed={batches_completed}|total={total_batches}|time={timestamp}"
+        
+        # Buat entry khusus untuk next batch info
+        state_entry = {
+            'batch_id': 'STATE_INFO',
+            'start_hex': next_start_hex,
+            'range_bits': str(range_bits),
+            'address_target': address,
+            'status': 'state_saved',
+            'found': '',
+            'wif': '',
+            'state_info': state_info
+        }
+        
+        # Tambahkan atau update entry STATE_INFO
+        log_dict['STATE_INFO'] = state_entry
+        
+        # Tulis kembali log
+        write_log_from_dict(log_dict)
+        
+        # Simpan ke Google Drive
+        save_to_drive()
+        
+        print(f"📝 Next batch info saved:")
+        print(f"   File: {NEXT_BATCH_FILE}")
+        print(f"   Log: {LOG_FILE} (as STATE_INFO entry)")
+        print(f"   Next start: 0x{next_start_hex}")
+        print(f"   Progress: {batches_completed}/{total_batches} batches")
+        
+    except Exception as e:
+        print(f"❌ Error saving next batch info: {e}")
+
+def load_next_batch_info():
+    """Memuat informasi batch berikutnya dari file"""
+    if not os.path.exists(NEXT_BATCH_FILE):
+        # Coba baca dari log file jika nextbatch.txt tidak ada
+        return load_next_batch_from_log()
+    
+    try:
+        info = {}
+        with open(NEXT_BATCH_FILE, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    info[key] = value
+        
+        return info
+    except Exception as e:
+        print(f"❌ Error loading next batch info from file: {e}")
+        return load_next_batch_from_log()
+
+def load_next_batch_from_log():
+    """Memuat informasi next batch dari log file"""
+    try:
+        log_dict = read_log_as_dict()
+        
+        # Cari entry STATE_INFO
+        if 'STATE_INFO' in log_dict:
+            state_info = log_dict['STATE_INFO'].get('state_info', '')
+            
+            # Parse state_info
+            info = {}
+            parts = state_info.split('|')
+            for part in parts:
+                if '=' in part:
+                    key, value = part.split('=', 1)
+                    if key == 'next_start':
+                        info['next_start_hex'] = value
+                    elif key == 'completed':
+                        info['batches_completed'] = value
+                    elif key == 'total':
+                        info['total_batches'] = value
+                    elif key == 'time':
+                        info['timestamp'] = value
+            
+            # Ambil info lainnya dari entry
+            info['address'] = log_dict['STATE_INFO'].get('address_target', '')
+            info['original_start'] = ''  # Tidak disimpan di log
+            info['original_range_bits'] = log_dict['STATE_INFO'].get('range_bits', '')
+            
+            print(f"📋 Loaded next batch info from log file")
+            return info
+        
+        return None
+    except Exception as e:
+        print(f"❌ Error loading next batch info from log: {e}")
+        return None
 
 def update_batch_log(batch_info):
     """Update log batch dengan informasi status terbaru"""
@@ -144,7 +268,7 @@ def parse_xiebo_output(output_text):
                 found_info['speed_info'] = line_stripped
                 found_lines.append(line_stripped)
                 
-                # ⭐ PERUBAHAN UTAMA: Set flag berhenti jika ditemukan 1 atau lebih
+                # Set flag berhenti jika ditemukan 1 atau lebih
                 if found_count >= 1:
                     STOP_SEARCH_FLAG = True
                     print(f"🚨 STOP_SEARCH_FLAG diaktifkan karena Found: {found_count}")
@@ -217,7 +341,8 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
                 'address_target': address,
                 'status': 'inprogress',
                 'found': '',
-                'wif': ''
+                'wif': '',
+                'state_info': ''
             }
             update_batch_log(batch_info)
         
@@ -321,7 +446,8 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
                 'address_target': address,
                 'status': 'interrupted',
                 'found': '',
-                'wif': ''
+                'wif': '',
+                'state_info': ''
             }
             update_batch_log(batch_info)
         
@@ -339,7 +465,8 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
                 'address_target': address,
                 'status': 'error',
                 'found': '',
-                'wif': ''
+                'wif': '',
+                'state_info': ''
             }
             update_batch_log(batch_info)
         
@@ -360,7 +487,7 @@ def calculate_range_bits(keys_count):
     else:
         return int(math.floor(log2_val)) + 1
 
-def initialize_batch_log(start_hex, range_bits, address, gpu_id, num_batches, batch_size):
+def initialize_batch_log(start_hex, range_bits, address, gpu_id, num_batches, batch_size, start_batch_id=0, save_state_early=True):
     """Inisialisasi log batch dengan semua batch dalam status uncheck"""
     log_dict = read_log_as_dict()
     
@@ -368,12 +495,34 @@ def initialize_batch_log(start_hex, range_bits, address, gpu_id, num_batches, ba
     total_keys = 1 << range_bits
     end_int = start_int + total_keys - 1
     
-    for i in range(num_batches):
+    total_batches_needed = math.ceil(total_keys / batch_size)
+    
+    # ⭐ PERUBAHAN UTAMA: Simpan state di awal sebelum menjalankan batch
+    if save_state_early and num_batches < total_batches_needed:
+        next_start_int = start_int + (num_batches * batch_size)
+        next_start_hex = format(next_start_int, 'x')
+        
+        # Simpan state info di awal
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        save_next_batch_info(
+            start_hex,
+            range_bits,
+            address,
+            next_start_hex,
+            start_batch_id,  # Belum ada yang diselesaikan
+            total_batches_needed,
+            timestamp
+        )
+        print(f"💾 State saved EARLY at initialization")
+        print(f"   Next start will be: 0x{next_start_hex}")
+        print(f"   After completing {num_batches} batches")
+    
+    for i in range(start_batch_id, min(start_batch_id + num_batches, total_batches_needed)):
         batch_start = start_int + (i * batch_size)
         batch_end = min(batch_start + batch_size, end_int + 1)
         batch_keys = batch_end - batch_start
         
-        # ⭐ PERUBAHAN UTAMA: Gunakan fungsi calculate_range_bits yang benar
+        # Gunakan fungsi calculate_range_bits yang benar
         batch_bits = calculate_range_bits(batch_keys)
         
         batch_hex = format(batch_start, 'x')
@@ -385,7 +534,8 @@ def initialize_batch_log(start_hex, range_bits, address, gpu_id, num_batches, ba
             'address_target': address,
             'status': 'uncheck',
             'found': '',
-            'wif': ''
+            'wif': '',
+            'state_info': ''
         }
         
         # Hanya tambah jika belum ada
@@ -395,28 +545,35 @@ def initialize_batch_log(start_hex, range_bits, address, gpu_id, num_batches, ba
     # Tulis ke file (silent)
     write_log_from_dict(log_dict)
     
-    return log_dict
+    return log_dict, total_batches_needed
 
 def get_log_summary():
     """Mendapatkan summary log tanpa menampilkan isi file"""
     if not os.path.exists(LOG_FILE):
-        return None, None, None
+        return None, None, None, None
     
     try:
         with open(LOG_FILE, 'r') as f:
             lines = f.readlines()
         
         if len(lines) <= 1:  # Hanya header
-            return 0, 0, {}
+            return 0, 0, {}, None
         
         # Hitung status
         status_counts = {}
         found_count = 0
         total_batches = 0
+        state_info = None
         
         # Baca data (skip header)
         reader = csv.DictReader(lines, delimiter='|')
         for row in reader:
+            batch_id = row.get('batch_id', '')
+            
+            if batch_id == 'STATE_INFO':
+                state_info = row.get('state_info', '')
+                continue
+            
             total_batches += 1
             status = row.get('status', 'unknown')
             status_counts[status] = status_counts.get(status, 0) + 1
@@ -424,15 +581,15 @@ def get_log_summary():
             if row.get('found') == 'YES':
                 found_count += 1
         
-        return total_batches, found_count, status_counts
+        return total_batches, found_count, status_counts, state_info
         
     except Exception as e:
         print(f"⚠️  Error getting log summary: {e}")
-        return None, None, None
+        return None, None, None, None
 
 def display_compact_summary():
-    """Menampilkan summary yang ringkas tanpa isi log"""
-    total_batches, found_count, status_counts = get_log_summary()
+    """Menampilkan summary yang ringkas dengan state info"""
+    total_batches, found_count, status_counts, state_info = get_log_summary()
     
     if total_batches is None:
         print("📭 No log file found")
@@ -450,26 +607,184 @@ def display_compact_summary():
             percentage = (count / total_batches) * 100
             print(f"  {status:<12}: {count:>4} ({percentage:>5.1f}%)")
     
+    if state_info:
+        print(f"\n💾 SAVED STATE:")
+        parts = state_info.split('|')
+        for part in parts:
+            if '=' in part:
+                key, value = part.split('=', 1)
+                if key == 'next_start':
+                    print(f"  Next start: 0x{value}")
+                elif key == 'completed':
+                    print(f"  Batches completed: {value}")
+                elif key == 'total':
+                    print(f"  Total batches needed: {value}")
+                elif key == 'time':
+                    print(f"  Saved at: {value}")
+    
     print(f"{'='*50}")
 
 def main():
-    global STOP_SEARCH_FLAG
+    global STOP_SEARCH_FLAG, BATCH_SIZE, MAX_BATCHES_PER_RUN
     
     # Reset flag stop search setiap kali program dijalankan
     STOP_SEARCH_FLAG = False
     
     # Parse arguments directly
     if len(sys.argv) < 2:
-        print("Xiebo Batch Runner with Auto-Stop Feature")
+        print("Xiebo Batch Runner with Early State Saving")
         print("Usage:")
-        print("  Single run: python3 xiebo_runner_fixed.py GPU_ID START_HEX RANGE_BITS ADDRESS")
-        print("  Batch run:  python3 xiebo_runner_fixed.py --batch GPU_ID START_HEX RANGE_BITS ADDRESS")
-        print("  Show summary: python3 xiebo_runner_fixed.py --summary")
-        print("\n⚠️  FEATURE: Auto-stop ketika ditemukan Found: 1 atau lebih")
+        print("  Single run: python3 xiebo.py GPU_ID START_HEX RANGE_BITS ADDRESS")
+        print("  Batch run:  python3 xiebo.py --batch GPU_ID START_HEX RANGE_BITS ADDRESS")
+        print("  Show summary: python3 xiebo.py --summary")
+        print("  Continue from saved state: python3 xiebo.py --continue")
+        print("\n⚠️  FEATURES:")
+        print("  - Auto-stop ketika ditemukan Found: 1 atau lebih")
+        print(f"  - Maksimal {MAX_BATCHES_PER_RUN} batch per eksekusi")
+        print(f"  - Batch size: {BATCH_SIZE:,} keys")
+        print("  - Simpan state DI AWAL untuk melanjutkan")
+        print("  - State info disimpan di logbatch.txt")
         sys.exit(1)
     
     # Show summary mode
     if sys.argv[1] == "--summary":
+        display_compact_summary()
+        
+        # Tampilkan informasi batch berikutnya jika ada
+        next_info = load_next_batch_info()
+        if next_info:
+            print(f"\n{'='*50}")
+            print("📋 NEXT BATCH INFO (from nextbatch.txt)")
+            print(f"{'='*50}")
+            print(f"Next start hex: {next_info.get('next_start_hex')}")
+            print(f"Progress: {next_info.get('batches_completed')}/{next_info.get('total_batches')} batches")
+            print(f"Address: {next_info.get('address')}")
+            print(f"Saved at: {next_info.get('timestamp')}")
+            print(f"To continue: python3 xiebo.py --continue")
+        
+        sys.exit(0)
+    
+    # Continue mode
+    if sys.argv[1] == "--continue":
+        next_info = load_next_batch_info()
+        if not next_info:
+            print("❌ No saved state found. Run with --batch first.")
+            sys.exit(1)
+        
+        print(f"\n{'='*60}")
+        print(f"CONTINUE MODE (State saved in log)")
+        print(f"{'='*60}")
+        print(f"Resuming from saved state...")
+        
+        gpu_id = "0"  # Default GPU ID untuk continue mode
+        start_hex = next_info['next_start_hex']
+        range_bits = int(next_info['original_range_bits'])
+        address = next_info['address']
+        batches_completed = int(next_info['batches_completed'])
+        total_batches = int(next_info['total_batches'])
+        
+        print(f"Next start: 0x{start_hex}")
+        print(f"Batches completed: {batches_completed}")
+        print(f"Total batches: {total_batches}")
+        print(f"Address: {address}")
+        print(f"Timestamp: {next_info.get('timestamp', 'unknown')}")
+        print(f"{'='*60}")
+        
+        # Hitung jumlah batch yang tersisa
+        remaining_batches = total_batches - batches_completed
+        batches_to_run = min(remaining_batches, MAX_BATCHES_PER_RUN)
+        
+        if batches_to_run <= 0:
+            print("✅ All batches already completed!")
+            sys.exit(0)
+        
+        print(f"\nRunning {batches_to_run} batches (max {MAX_BATCHES_PER_RUN} per run)")
+        print(f"{remaining_batches} batches remaining in total")
+        
+        # Inisialisasi log untuk batch yang akan dijalankan
+        # Tidak perlu save state early karena ini sudah continue mode
+        initialize_batch_log(start_hex, range_bits, address, gpu_id, batches_to_run, BATCH_SIZE, 
+                           start_batch_id=batches_completed, save_state_early=False)
+        
+        # Jalankan batch
+        start_int = int(start_hex, 16)
+        end_int = start_int + (1 << range_bits) - 1
+        
+        for i in range(batches_to_run):
+            if STOP_SEARCH_FLAG:
+                print(f"\n{'='*60}")
+                print(f"🚨 AUTO-STOP TRIGGERED!")
+                print(f"{'='*60}")
+                print(f"Pencarian dihentikan karena private key telah ditemukan")
+                break
+            
+            batch_id = batches_completed + i
+            batch_start = start_int + (i * BATCH_SIZE)
+            batch_end = min(batch_start + BATCH_SIZE, end_int + 1)
+            batch_keys = batch_end - batch_start
+            
+            batch_bits = calculate_range_bits(batch_keys)
+            batch_hex = format(batch_start, 'x')
+            
+            # Run this batch
+            print(f"\n{'='*60}")
+            print(f"▶️  BATCH {batch_id+1}/{total_batches} (Continue {i+1}/{batches_to_run})")
+            print(f"{'='*60}")
+            print(f"Start: 0x{batch_hex}")
+            print(f"Bits: {batch_bits}")
+            print(f"Keys: {batch_keys:,}")
+            
+            return_code, found_info = run_xiebo(gpu_id, batch_hex, batch_bits, address, batch_id=batch_id)
+            
+            if return_code == 0:
+                print(f"✅ Batch {batch_id+1} completed successfully")
+            else:
+                print(f"⚠️  Batch {batch_id+1} exited with code {return_code}")
+            
+            # Tampilkan progress
+            if (i + 1) % 10 == 0 or i == batches_to_run - 1:
+                completed_now = batches_completed + i + 1
+                percentage = (completed_now / total_batches) * 100
+                print(f"\n📈 Overall Progress: {completed_now}/{total_batches} batches ({percentage:.1f}%)")
+            
+            # Delay antara batch
+            if i < batches_to_run - 1 and not STOP_SEARCH_FLAG:
+                print(f"\n⏱️  Waiting 5 seconds before next batch...")
+                time.sleep(5)
+        
+        # Update state untuk batch berikutnya
+        next_batch_id = batches_completed + batches_to_run
+        if next_batch_id < total_batches and not STOP_SEARCH_FLAG:
+            next_start_int = int(start_hex, 16) + (batches_to_run * BATCH_SIZE)
+            next_start_hex = format(next_start_int, 'x')
+            
+            # Update state info
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            save_next_batch_info(
+                next_info.get('original_start', start_hex),
+                range_bits,
+                address,
+                next_start_hex,
+                next_batch_id,
+                total_batches,
+                timestamp
+            )
+            
+            print(f"\n📝 Updated state for next run.")
+            print(f"   Next start: 0x{next_start_hex}")
+            print(f"   To continue: python3 xiebo.py --continue")
+        
+        print(f"\n{'='*60}")
+        if STOP_SEARCH_FLAG:
+            print(f"🎯 SEARCH STOPPED - PRIVATE KEY FOUND!")
+        else:
+            if next_batch_id >= total_batches:
+                print(f"🎉 ALL BATCHES COMPLETED!")
+            else:
+                print(f"⏸️  BATCHES PAUSED - READY FOR NEXT RUN")
+        print(f"{'='*60}")
+        
+        # Tampilkan summary
         display_compact_summary()
         sys.exit(0)
     
@@ -500,16 +815,13 @@ def main():
         range_bits = int(sys.argv[4])
         address = sys.argv[5]
         
-        # ⭐ PERUBAHAN UTAMA: Batch size dalam keys (100 miliar = 100,000,000,000)
-        BATCH_SIZE = 2000000000000
-        
         # Calculate total
         start_int = int(start_hex, 16)
         total_keys = 1 << range_bits
         end_int = start_int + total_keys - 1
         
         print(f"\n{'='*60}")
-        print(f"BATCH MODE (with AUTO-STOP when Found: 1+)")
+        print(f"BATCH MODE with EARLY STATE SAVING")
         print(f"{'='*60}")
         print(f"GPU: {gpu_id}")
         print(f"Start: 0x{start_hex}")
@@ -518,40 +830,39 @@ def main():
         print(f"End: 0x{format(end_int, 'x')}")
         print(f"Batch size: {BATCH_SIZE:,} keys")
         print(f"Address: {address}")
-        print(f"Log file: {LOG_FILE} (7 columns, auto-saved to Google Drive)")
+        print(f"Log file: {LOG_FILE} (with state info)")
+        print(f"Next batch file: {NEXT_BATCH_FILE}")
+        print(f"Max batches per run: {MAX_BATCHES_PER_RUN}")
+        print(f"State saved: EARLY (at initialization)")
         print(f"⚠️  AUTO-STOP: Pencarian akan berhenti otomatis jika ditemukan Found: 1 atau lebih")
         print(f"{'='*60}")
         
-        # Calculate batches
-        num_batches = math.ceil(total_keys / BATCH_SIZE)
+        # Calculate total batches needed
+        total_batches_needed = math.ceil(total_keys / BATCH_SIZE)
         
-        print(f"\nNumber of batches: {num_batches}")
-        print("First 3 batches:")
+        # Limit to MAX_BATCHES_PER_RUN
+        batches_to_run = min(total_batches_needed, MAX_BATCHES_PER_RUN)
         
-        # Inisialisasi log batch (silent)
-        initialize_batch_log(start_hex, range_bits, address, gpu_id, num_batches, BATCH_SIZE)
+        print(f"\nTotal batches needed: {total_batches_needed:,}")
+        print(f"Batches to run this session: {batches_to_run} (max {MAX_BATCHES_PER_RUN})")
         
-        # Tampilkan batch pertama saja
-        for i in range(min(3, num_batches)):
-            batch_start = start_int + (i * BATCH_SIZE)
-            batch_end = min(batch_start + BATCH_SIZE, end_int + 1)
-            batch_keys = batch_end - batch_start
-            
-            # ⭐ PERUBAHAN UTAMA: Gunakan fungsi calculate_range_bits yang benar
-            batch_bits = calculate_range_bits(batch_keys)
-            
-            batch_hex = format(batch_start, 'x')
-            print(f"  Batch {i}: 0x{batch_hex} [{batch_bits} bits, {batch_keys:,} keys]")
+        if batches_to_run < total_batches_needed:
+            print(f"Remaining batches for next run: {total_batches_needed - batches_to_run:,}")
+            print(f"⚠️  State will be saved EARLY before running any batches")
+        
+        # ⭐ PERUBAHAN UTAMA: Inisialisasi dan simpan state DI AWAL
+        # Parameter save_state_early=True akan menyimpan state saat inisialisasi
+        initialize_batch_log(start_hex, range_bits, address, gpu_id, batches_to_run, BATCH_SIZE, 
+                           start_batch_id=0, save_state_early=True)
         
         # Run each batch
-        for i in range(num_batches):
-            # ⭐ PERUBAHAN UTAMA: Cek flag stop search sebelum menjalankan batch
+        for i in range(batches_to_run):
             if STOP_SEARCH_FLAG:
                 print(f"\n{'='*60}")
                 print(f"🚨 AUTO-STOP TRIGGERED!")
                 print(f"{'='*60}")
                 print(f"Pencarian dihentikan karena private key telah ditemukan")
-                print(f"Batch yang tersisa ({i+1}/{num_batches}) tidak akan dijalankan")
+                print(f"Batch yang tersisa ({i+1}/{batches_to_run}) tidak akan dijalankan")
                 print(f"{'='*60}")
                 break
             
@@ -559,14 +870,12 @@ def main():
             batch_end = min(batch_start + BATCH_SIZE, end_int + 1)
             batch_keys = batch_end - batch_start
             
-            # ⭐ PERUBAHAN UTAMA: Gunakan fungsi calculate_range_bits yang benar
             batch_bits = calculate_range_bits(batch_keys)
-            
             batch_hex = format(batch_start, 'x')
             
             # Run this batch
             print(f"\n{'='*60}")
-            print(f"▶️  BATCH {i+1}/{num_batches}")
+            print(f"▶️  BATCH {i+1}/{batches_to_run} (Total needed: {total_batches_needed:,})")
             print(f"{'='*60}")
             print(f"Start: 0x{batch_hex}")
             print(f"Bits: {batch_bits}")
@@ -579,48 +888,68 @@ def main():
             else:
                 print(f"⚠️  Batch {i+1} exited with code {return_code}")
             
-            # Tampilkan progress setiap 10 batch atau batch terakhir
-            if (i + 1) % 10 == 0 or i == num_batches - 1:
+            # Tampilkan progress
+            if (i + 1) % 10 == 0 or i == batches_to_run - 1:
                 total_processed = min((i + 1) * BATCH_SIZE, total_keys)
-                percentage = (total_processed / total_keys) * 100
-                print(f"\n📈 Overall Progress: {i+1}/{num_batches} batches ({percentage:.1f}%)")
+                percentage_session = ((i + 1) / batches_to_run) * 100
+                percentage_total = (total_processed / total_keys) * 100
+                print(f"\n📈 Progress this session: {i+1}/{batches_to_run} batches ({percentage_session:.1f}%)")
+                print(f"📈 Overall progress: {total_processed:,}/{total_keys:,} keys ({percentage_total:.1f}%)")
             
-            # ⭐ PERUBAHAN UTAMA: Delay antara batch hanya jika tidak ada flag stop
-            if i < num_batches - 1 and not STOP_SEARCH_FLAG:
+            # Delay antara batch
+            if i < batches_to_run - 1 and not STOP_SEARCH_FLAG:
                 print(f"\n⏱️  Waiting 5 seconds before next batch...")
                 time.sleep(5)
+        
+        # Update state info jika sudah menyelesaikan semua batch yang dijadwalkan
+        if batches_to_run < total_batches_needed and not STOP_SEARCH_FLAG:
+            # State sudah disimpan di awal, tapi kita update progress-nya
+            next_start_int = start_int + (batches_to_run * BATCH_SIZE)
+            next_start_hex = format(next_start_int, 'x')
+            
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            save_next_batch_info(
+                start_hex,
+                range_bits,
+                address,
+                next_start_hex,
+                batches_to_run,  # Sekarang sudah selesai
+                total_batches_needed,
+                timestamp
+            )
+            
+            print(f"\n📝 Updated state with completed progress.")
+            print(f"   Next start: 0x{next_start_hex}")
+            print(f"   Batches completed: {batches_to_run}")
+            print(f"   Total batches needed: {total_batches_needed}")
+            print(f"   To continue: python3 xiebo.py --continue")
         
         print(f"\n{'='*60}")
         if STOP_SEARCH_FLAG:
             print(f"🎯 SEARCH STOPPED - PRIVATE KEY FOUND!")
         else:
-            print(f"🎉 ALL BATCHES COMPLETED!")
+            if batches_to_run >= total_batches_needed:
+                print(f"🎉 ALL BATCHES COMPLETED!")
+            else:
+                print(f"⏸️  BATCHES PAUSED - READY FOR NEXT RUN")
+                print(f"💾 State already saved at initialization")
         print(f"{'='*60}")
         
         # Tampilkan summary ringkas
         display_compact_summary()
         
         # Cek jika ada private key yang ditemukan
-        total_batches, found_count, _ = get_log_summary()
+        total_batches_log, found_count, _, _ = get_log_summary()
         if found_count and found_count > 0:
             print(f"\n🔥 {found_count} PRIVATE KEY(S) FOUND!")
             print(f"   Check {LOG_FILE} for batch details and WIF keys")
-            print(f"   File also auto-saved to Google Drive")
-        
-        # Tampilkan isi log file terakhir
-        print(f"\n📄 Final log file content ({LOG_FILE}):")
-        print(f"{'='*60}")
-        if os.path.exists(LOG_FILE):
-            with open(LOG_FILE, 'r') as f:
-                content = f.read()
-                print(content)
-        print(f"{'='*60}")
         
     else:
         print("Invalid arguments")
-        print("Usage: python3 xiebo_runner_fixed.py GPU_ID START_HEX RANGE_BITS ADDRESS")
-        print("Or:    python3 xiebo_runner_fixed.py --batch GPU_ID START_HEX RANGE_BITS ADDRESS")
-        print("Or:    python3 xiebo_runner_fixed.py --summary")
+        print("Usage: python3 xiebo.py GPU_ID START_HEX RANGE_BITS ADDRESS")
+        print("Or:    python3 xiebo.py --batch GPU_ID START_HEX RANGE_BITS ADDRESS")
+        print("Or:    python3 xiebo.py --summary")
+        print("Or:    python3 xiebo.py --continue")
         return 1
 
 if __name__ == "__main__":
