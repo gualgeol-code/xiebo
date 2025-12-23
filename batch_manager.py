@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Batch Manager untuk executable xiebo binary
-Membagi range besar menjadi batch-batch kecil dan menjalankan xiebo.exe secara sequential
+Batch Manager untuk executable xiebo binary - FIXED VERSION
 """
 
 import subprocess
@@ -9,18 +8,17 @@ import json
 import os
 import sys
 import time
-import shutil
+import signal
 from datetime import datetime
 import argparse
 import threading
-from queue import Queue
-import signal
+import math
 
 # ==================== KONFIGURASI ====================
-XIEBO_BINARY = "./xiebo"  # Path ke executable xiebo
+XIEBO_BINARY = "./xiebo"
 LOG_FILE = "batch_progress.json"
-BATCH_SIZE = 100000000  # 100 juta keys per batch (sesuaikan dengan kemampuan xiebo)
-MAX_PARALLEL_GPU = 1     # Jumlah GPU yang bisa dipakai parallel
+BATCH_SIZE = 100000000  # 100 juta keys per batch
+CHECKPOINT_INTERVAL = 30  # Detik antara checkpoint
 
 # ==================== BATCH MANAGER ====================
 class XieboBatchManager:
@@ -28,80 +26,69 @@ class XieboBatchManager:
         self.xiebo_binary = xiebo_binary
         self.log_file = log_file
         self.batches = []
+        self.running = False
+        self.should_stop = False
         self.load_progress()
         
-        # Verifikasi xiebo binary
-        if not os.path.exists(xiebo_binary):
-            print(f"❌ Error: xiebo binary not found at {xiebo_binary}")
-            print("Please place xiebo executable in the same directory or update XIEBO_BINARY path")
-            sys.exit(1)
-        
-        # Test xiebo binary
-        self.test_xiebo()
+        # Setup signal handler
+        signal.signal(signal.SIGINT, self.signal_handler)
+        signal.signal(signal.SIGTERM, self.signal_handler)
     
-    def test_xiebo(self):
-        """Test if xiebo binary works"""
-        try:
-            result = subprocess.run([self.xiebo_binary, "--help"], 
-                                  capture_output=True, text=True, timeout=2)
-            if result.returncode == 0 or "--help" in result.stderr or "--help" in result.stdout:
-                print(f"✅ xiebo binary verified: {self.xiebo_binary}")
-                return True
-        except:
-            pass
-        
-        try:
-            result = subprocess.run([self.xiebo_binary], 
-                                  capture_output=True, text=True, timeout=2)
-            print(f"✅ xiebo binary verified (exit code: {result.returncode})")
-            return True
-        except Exception as e:
-            print(f"⚠️  xiebo binary test: {e}")
-            # Continue anyway, might need different parameters
-        
-        return True
+    def signal_handler(self, signum, frame):
+        print(f"\n⚠️  Received signal {signum}, stopping gracefully...")
+        self.should_stop = True
+        self.running = False
     
     def load_progress(self):
         """Load progress from log file"""
-        if os.path.exists(self.log_file):
-            try:
+        try:
+            if os.path.exists(self.log_file):
                 with open(self.log_file, 'r') as f:
                     data = json.load(f)
                     self.batches = data.get('batches', [])
                     print(f"📂 Loaded {len(self.batches)} batches from {self.log_file}")
-            except:
+            else:
                 self.batches = []
-        else:
+        except Exception as e:
+            print(f"⚠️  Error loading progress: {e}")
             self.batches = []
     
     def save_progress(self):
         """Save progress to log file"""
-        with open(self.log_file, 'w') as f:
-            json.dump({
-                'batches': self.batches,
-                'last_updated': datetime.now().isoformat()
-            }, f, indent=2)
+        try:
+            with open(self.log_file, 'w') as f:
+                json.dump({
+                    'batches': self.batches,
+                    'last_updated': datetime.now().isoformat()
+                }, f, indent=2)
+        except Exception as e:
+            print(f"⚠️  Error saving progress: {e}")
     
     def create_batches(self, start_hex, range_bits, gpu_id, target_address):
         """
         Create batch configuration
-        start_hex: starting key in hex (e.g., "100000000000000000")
-        range_bits: number of bits to search (e.g., 68)
         """
-        # Calculate total keys
-        start_int = int(start_hex, 16)
+        # Clean hex input
+        start_hex = start_hex.lower().replace('0x', '')
+        
+        try:
+            start_int = int(start_hex, 16)
+        except ValueError:
+            print(f"❌ Invalid hex string: {start_hex}")
+            return False
+        
         total_keys = 1 << range_bits  # 2^range_bits
         end_int = start_int + total_keys - 1
         
         print(f"\n📊 Batch Planning:")
-        print(f"  Start: 0x{start_hex} ({start_int})")
+        print(f"  Start: 0x{format(start_int, 'x')} ({start_int:,})")
         print(f"  Range: {range_bits} bits")
         print(f"  Total keys: {total_keys:,}")
-        print(f"  End: 0x{format(end_int, 'x')} ({end_int})")
+        print(f"  End: 0x{format(end_int, 'x')} ({end_int:,})")
         print(f"  Batch size: {BATCH_SIZE:,} keys")
         
-        # Create batches
-        num_batches = (total_keys + BATCH_SIZE - 1) // BATCH_SIZE
+        # Calculate number of batches
+        num_batches = math.ceil(total_keys / BATCH_SIZE)
         
         self.batches = []
         for i in range(num_batches):
@@ -109,53 +96,53 @@ class XieboBatchManager:
             batch_end = min(batch_start + BATCH_SIZE, end_int + 1)
             batch_size = batch_end - batch_start
             
-            # Format untuk xiebo: start dalam hex, range dalam keys
-            # Karena xiebo menerima -range dalam bits, kita perlu convert
-            # Tapi jika xiebo menerima -range sebagai jumlah keys, kita hitung bits needed
-            
-            # Hitung bits yang diperlukan untuk batch_size keys
-            # batch_bits = ceil(log2(batch_size))
-            batch_bits = (batch_size - 1).bit_length()
+            # Calculate bits needed for this batch
+            # We need to pass bits to xiebo, not number of keys
+            if batch_size <= 1:
+                batch_bits = 1
+            else:
+                batch_bits = math.ceil(math.log2(batch_size))
             
             batch_info = {
                 'id': i,
                 'gpu_id': gpu_id,
-                'start_hex': format(batch_start, 'x'),  # Tanpa leading zeros
+                'start_hex': format(batch_start, 'x'),
                 'batch_bits': batch_bits,
                 'batch_size': batch_size,
                 'actual_start': batch_start,
                 'actual_end': batch_end - 1,
                 'target_address': target_address,
-                'status': 'pending',  # pending, running, completed, failed
+                'status': 'pending',
                 'start_time': None,
                 'end_time': None,
-                'output_file': f"batch_{i:04d}.log"
+                'output_file': f"batch_{i:06d}.log",
+                'error_log': f"batch_{i:06d}_error.log"
             }
             self.batches.append(batch_info)
             
+            # Print first 3 and last batch
             if i < 3 or i == num_batches - 1:
                 status = "First" if i == 0 else "Last" if i == num_batches - 1 else "Next"
-                print(f"  {status} batch {i}: 0x{format(batch_start, 'x')} "
+                print(f"  {status} batch {i}: 0x{batch_info['start_hex']} "
                       f"[{batch_bits} bits, {batch_size:,} keys]")
         
         self.save_progress()
-        return self.batches
+        print(f"✅ Created {num_batches} batches")
+        return True
     
     def execute_batch(self, batch_info):
         """Execute a single batch using xiebo binary"""
         batch_id = batch_info['id']
-        output_file = batch_info['output_file']
         
         print(f"\n{'='*60}")
         print(f"🚀 Starting batch {batch_id}")
         print(f"  GPU: {batch_info['gpu_id']}")
         print(f"  Start: 0x{batch_info['start_hex']}")
-        print(f"  Range bits: {batch_info['batch_bits']}")
+        print(f"  Range bits: {batch_bits}")
         print(f"  Size: {batch_info['batch_size']:,} keys")
-        print(f"  Output: {output_file}")
         print(f"{'='*60}")
         
-        # Build command for xiebo binary
+        # Build command
         cmd = [
             self.xiebo_binary,
             "-gpuId", str(batch_info['gpu_id']),
@@ -166,20 +153,22 @@ class XieboBatchManager:
         
         print(f"Command: {' '.join(cmd)}")
         
-        # Update batch status
+        # Update status
         batch_info['status'] = 'running'
         batch_info['start_time'] = datetime.now().isoformat()
         self.save_progress()
         
+        # Execute
         try:
-            # Run xiebo with output redirection
-            with open(output_file, 'w') as f:
-                f.write(f"Batch {batch_id} started at {batch_info['start_time']}\n")
-                f.write(f"Command: {' '.join(cmd)}\n")
-                f.write("=" * 60 + "\n")
-                f.flush()
+            with open(batch_info['output_file'], 'w') as out_file:
+                # Write header
+                out_file.write(f"=== Batch {batch_id} ===\n")
+                out_file.write(f"Start: {batch_info['start_time']}\n")
+                out_file.write(f"Command: {' '.join(cmd)}\n")
+                out_file.write(f"{'='*60}\n\n")
+                out_file.flush()
                 
-                # Execute and capture output in real-time
+                # Start process
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
@@ -189,13 +178,13 @@ class XieboBatchManager:
                     universal_newlines=True
                 )
                 
-                # Stream output to file and console
+                # Read output line by line
                 for line in process.stdout:
-                    f.write(line)
-                    f.flush()
-                    # Print to console with batch ID prefix
+                    out_file.write(line)
+                    out_file.flush()
                     print(f"[Batch {batch_id}] {line}", end='')
                 
+                # Wait for process to complete
                 process.wait()
                 return_code = process.returncode
             
@@ -208,11 +197,11 @@ class XieboBatchManager:
                 batch_info['status'] = 'failed'
                 print(f"❌ Batch {batch_id} failed with exit code {return_code}")
                 
-                # Check if key was found (special exit code maybe?)
-                with open(output_file, 'r') as f:
+                # Check if key was found
+                with open(batch_info['output_file'], 'r') as f:
                     content = f.read()
-                    if "FOUND" in content.upper() or "KEY" in content.upper():
-                        print(f"🎉 Possible key found in batch {batch_id}! Check {output_file}")
+                    if any(keyword in content for keyword in ['found', 'Found', 'FOUND', 'key', 'Key', 'KEY']):
+                        print(f"🎉 KEY FOUND in batch {batch_id}! Check {batch_info['output_file']}")
             
             self.save_progress()
             return return_code
@@ -225,25 +214,164 @@ class XieboBatchManager:
             return -1
     
     def get_next_pending_batch(self):
-        """Get the next pending batch to execute"""
+        """Get next pending batch"""
         for batch in self.batches:
             if batch['status'] == 'pending':
                 return batch
         return None
     
-    def get_progress_summary(self):
-        """Get overall progress summary"""
+    def monitor_progress(self):
+        """Monitor progress in background"""
+        print(f"\n📈 Starting progress monitor...")
+        print("Press Ctrl+C to stop execution\n")
+        
+        last_checkpoint = time.time()
+        
+        while self.running and not self.should_stop:
+            try:
+                # Print status every CHECKPOINT_INTERVAL seconds
+                if time.time() - last_checkpoint >= CHECKPOINT_INTERVAL:
+                    self.print_status()
+                    last_checkpoint = time.time()
+                
+                time.sleep(1)
+                
+                # Check if all done
+                pending = sum(1 for b in self.batches if b['status'] == 'pending')
+                running = sum(1 for b in self.batches if b['status'] == 'running')
+                
+                if pending == 0 and running == 0:
+                    print("\n✅ All batches completed!")
+                    self.running = False
+                    break
+                    
+            except KeyboardInterrupt:
+                print("\n⏸️  Monitoring stopped")
+                self.should_stop = True
+                break
+            except Exception as e:
+                print(f"⚠️  Monitor error: {e}")
+                time.sleep(5)
+    
+    def print_status(self):
+        """Print current status"""
         total = len(self.batches)
         if total == 0:
-            return {
-                'total': 0,
-                'completed': 0,
-                'running': 0,
-                'pending': 0,
-                'failed': 0,
-                'percentage': 0
-            }
+            print("No batches to process")
+            return
         
+        completed = sum(1 for b in self.batches if b['status'] == 'completed')
+        running = sum(1 for b in self.batches if b['status'] == 'running')
+        pending = sum(1 for b in self.batches if b['status'] == 'pending')
+        failed = sum(1 for b in self.batches if b['status'] == 'failed')
+        
+        percentage = (completed / total * 100) if total > 0 else 0
+        
+        print(f"\n{'='*60}")
+        print(f"PROGRESS: {percentage:.1f}% ({completed}/{total} batches)")
+        print(f"  ✅ Completed: {completed}")
+        print(f"  🔄 Running: {running}")
+        print(f"  ⏳ Pending: {pending}")
+        print(f"  ❌ Failed: {failed}")
+        
+        # Show current running batch
+        for batch in self.batches:
+            if batch['status'] == 'running':
+                elapsed = ""
+                if batch['start_time']:
+                    try:
+                        start = datetime.fromisoformat(batch['start_time'])
+                        elapsed = str(datetime.now() - start).split('.')[0]
+                    except:
+                        pass
+                print(f"  Current: Batch {batch['id']} (running for {elapsed})")
+                break
+        
+        # Estimate time remaining
+        if completed > 0 and pending > 0:
+            # Simple estimation
+            avg_time_per_batch = 300  # Assume 5 minutes per batch
+            remaining_seconds = pending * avg_time_per_batch
+            hours = remaining_seconds // 3600
+            minutes = (remaining_seconds % 3600) // 60
+            
+            if hours > 0:
+                print(f"  ⏱️  Estimated time remaining: {hours}h {minutes}m")
+            else:
+                print(f"  ⏱️  Estimated time remaining: {minutes}m")
+        
+        print(f"{'='*60}")
+    
+    def run_batches(self):
+        """Main function to run all batches"""
+        if not self.batches:
+            print("❌ No batches to process")
+            return False
+        
+        self.running = True
+        self.should_stop = False
+        
+        print(f"\n{'='*60}")
+        print(f"STARTING BATCH PROCESSING")
+        print(f"Total batches: {len(self.batches)}")
+        print(f"{'='*60}")
+        
+        total_start_time = time.time()
+        batches_processed = 0
+        
+        try:
+            while self.running and not self.should_stop:
+                batch = self.get_next_pending_batch()
+                if not batch:
+                    print("\n✅ No more pending batches")
+                    break
+                
+                # Execute batch
+                result = self.execute_batch(batch)
+                batches_processed += 1
+                
+                # Check if we should stop
+                if self.should_stop:
+                    print("\n⏸️  Stopping as requested...")
+                    break
+                
+                # Small delay between batches if not stopping
+                if not self.should_stop and self.get_next_pending_batch():
+                    print(f"\n⏱️  Waiting 3 seconds before next batch...")
+                    for i in range(3, 0, -1):
+                        if self.should_stop:
+                            break
+                        print(f"  {i}...")
+                        time.sleep(1)
+        
+        except KeyboardInterrupt:
+            print("\n⚠️  Interrupted by user")
+        except Exception as e:
+            print(f"\n❌ Error in batch processing: {e}")
+        finally:
+            self.running = False
+            total_elapsed = time.time() - total_start_time
+            
+            # Final summary
+            print(f"\n{'='*60}")
+            print(f"PROCESSING FINISHED")
+            print(f"{'='*60}")
+            print(f"Total time: {total_elapsed:.2f} seconds")
+            print(f"Batches processed: {batches_processed}")
+            
+            summary = self.get_summary()
+            print(f"✅ Completed: {summary['completed']}")
+            print(f"❌ Failed: {summary['failed']}")
+            print(f"⏳ Pending: {summary['pending']}")
+            
+            # Check for found keys
+            self.check_for_found_keys()
+            
+            return True
+    
+    def get_summary(self):
+        """Get summary of batches"""
+        total = len(self.batches)
         completed = sum(1 for b in self.batches if b['status'] == 'completed')
         running = sum(1 for b in self.batches if b['status'] == 'running')
         pending = sum(1 for b in self.batches if b['status'] == 'pending')
@@ -258,75 +386,59 @@ class XieboBatchManager:
             'percentage': (completed / total * 100) if total > 0 else 0
         }
     
-    def print_status(self):
-        """Print current status"""
-        summary = self.get_progress_summary()
+    def check_for_found_keys(self):
+        """Check log files for found keys"""
+        print(f"\n🔍 Checking log files for found keys...")
+        found_files = []
         
-        print(f"\n{'='*60}")
-        print(f"XIEBO BATCH MANAGER STATUS")
-        print(f"{'='*60}")
-        print(f"Total batches: {summary['total']}")
-        print(f"Completed: {summary['completed']} ({summary['percentage']:.1f}%)")
-        print(f"Running: {summary['running']}")
-        print(f"Pending: {summary['pending']}")
-        print(f"Failed: {summary['failed']}")
+        for batch in self.batches:
+            if os.path.exists(batch['output_file']):
+                try:
+                    with open(batch['output_file'], 'r') as f:
+                        content = f.read()
+                        # Look for indicators of found key
+                        if any(indicator in content.lower() for indicator in 
+                              ['found', 'key found', 'private key', 'success']):
+                            found_files.append(batch['output_file'])
+                except:
+                    pass
         
-        if summary['total'] > 0:
-            # Show recent batches
-            print(f"\nRecent batches:")
-            for batch in self.batches[-5:]:
-                status_icon = {
-                    'completed': '✅',
-                    'running': '🔄',
-                    'pending': '⏳',
-                    'failed': '❌'
-                }.get(batch['status'], '❓')
-                
-                print(f"  {status_icon} Batch {batch['id']}: {batch['status']} "
-                      f"(0x{batch['start_hex'][:16]}... [{batch['batch_bits']} bits])")
+        if found_files:
+            print(f"🎉 Potential keys found in these files:")
+            for f in found_files:
+                print(f"  - {f}")
+            
+            # Create summary file
+            with open('FOUND_KEYS_SUMMARY.txt', 'w') as f:
+                f.write("Potential keys found in these batch logs:\n")
+                for file in found_files:
+                    f.write(f"- {file}\n")
+                f.write(f"\nChecked at: {datetime.now().isoformat()}\n")
+        else:
+            print("No keys found in this session")
     
-    def resume_from_failed(self):
-        """Resume from failed batches"""
+    def resume_failed_batches(self):
+        """Reset failed batches to pending"""
         failed_batches = [b for b in self.batches if b['status'] == 'failed']
         if not failed_batches:
-            print("No failed batches to resume.")
-            return
+            print("No failed batches to resume")
+            return 0
         
-        print(f"\n🔄 Resuming {len(failed_batches)} failed batches:")
+        print(f"\n🔄 Resetting {len(failed_batches)} failed batches to pending...")
         for batch in failed_batches:
             batch['status'] = 'pending'
             print(f"  Batch {batch['id']} reset to pending")
         
         self.save_progress()
-    
-    def monitor_progress(self, interval=10):
-        """Monitor progress in a separate thread"""
-        print(f"\n📈 Starting progress monitor (updates every {interval}s)")
-        print("Press Ctrl+C to stop\n")
-        
-        try:
-            while True:
-                self.print_status()
-                time.sleep(interval)
-                
-                # Check if all batches are done
-                summary = self.get_progress_summary()
-                if summary['pending'] == 0 and summary['running'] == 0:
-                    print("\n🎉 All batches completed!")
-                    break
-                    
-        except KeyboardInterrupt:
-            print("\n⏸️  Progress monitoring stopped by user")
-            return
+        return len(failed_batches)
 
-# ==================== MAIN EXECUTION ====================
+# ==================== MAIN ====================
 def main():
     parser = argparse.ArgumentParser(description='Batch Manager for xiebo binary')
-    parser.add_argument('--gpu', type=int, required=True, help='GPU ID to use')
-    parser.add_argument('--start', type=str, required=True, help='Start key in hex')
-    parser.add_argument('--range', type=int, dest='range_bits', required=True, 
-                       help='Range in bits (e.g., 68 for 2^68 keys)')
-    parser.add_argument('--address', type=str, required=True, help='Target Bitcoin address')
+    parser.add_argument('--gpu', type=int, help='GPU ID to use')
+    parser.add_argument('--start', type=str, help='Start key in hex')
+    parser.add_argument('--range', type=int, dest='range_bits', help='Range in bits')
+    parser.add_argument('--address', type=str, help='Target Bitcoin address')
     parser.add_argument('--resume', action='store_true', help='Resume from previous session')
     parser.add_argument('--status', action='store_true', help='Show status only')
     parser.add_argument('--retry-failed', action='store_true', help='Retry failed batches')
@@ -334,92 +446,63 @@ def main():
     
     args = parser.parse_args()
     
-    # Initialize manager
+    # Initialize
     manager = XieboBatchManager(XIEBO_BINARY)
     
     # Show status only
     if args.status:
         manager.print_status()
-        return
+        sys.exit(0)
     
     # Retry failed batches
     if args.retry_failed:
-        manager.resume_from_failed()
+        count = manager.resume_failed_batches()
+        if count == 0:
+            sys.exit(0)
         args.resume = True
     
-    # Resume from existing batches
+    # Resume or create new
     if args.resume:
         if not manager.batches:
-            print("No existing batches to resume. Creating new batches...")
+            print("❌ No existing batches to resume")
+            if not all([args.gpu, args.start, args.range_bits, args.address]):
+                print("Please provide all parameters for new scan:")
+                print("  --gpu ID --start HEX --range BITS --address ADDR")
+                sys.exit(1)
+            print("Creating new batches...")
             manager.create_batches(args.start, args.range_bits, args.gpu, args.address)
+        else:
+            print("🔄 Resuming existing batches...")
     else:
         # Create new batches
-        manager.create_batches(args.start, args.range_bits, args.gpu, args.address)
+        if not all([args.gpu, args.start, args.range_bits, args.address]):
+            print("❌ Missing required parameters for new scan")
+            print("Please provide: --gpu ID --start HEX --range BITS --address ADDR")
+            sys.exit(1)
+        
+        print("🆕 Creating new batches...")
+        success = manager.create_batches(args.start, args.range_bits, args.gpu, args.address)
+        if not success:
+            sys.exit(1)
     
-    # Start monitoring in background thread if requested
+    # Start monitor in background thread if requested
     monitor_thread = None
     if args.monitor:
         monitor_thread = threading.Thread(target=manager.monitor_progress, daemon=True)
         monitor_thread.start()
+        # Give monitor time to start
+        time.sleep(1)
     
-    # Process batches
-    print(f"\n{'='*60}")
-    print(f"STARTING BATCH PROCESSING")
-    print(f"{'='*60}")
-    
-    total_start_time = time.time()
-    
+    # Run batches
     try:
-        while True:
-            batch = manager.get_next_pending_batch()
-            if not batch:
-                print("\n✅ No more pending batches.")
-                break
-            
-            # Execute batch
-            result = manager.execute_batch(batch)
-            
-            # Small delay between batches
-            if manager.get_next_pending_batch():
-                print(f"\n⏱️  Waiting 2 seconds before next batch...")
-                time.sleep(2)
-    
+        manager.run_batches()
     except KeyboardInterrupt:
-        print("\n⚠️  Batch processing interrupted by user.")
-        print("Progress has been saved. Use --resume to continue.")
-    
+        print("\n\n⚠️  Batch processing interrupted")
     finally:
-        total_elapsed = time.time() - total_start_time
+        print("\n✅ Batch manager finished")
         
-        # Final status
-        summary = manager.get_progress_summary()
-        print(f"\n{'='*60}")
-        print(f"PROCESSING COMPLETE")
-        print(f"{'='*60}")
-        print(f"Total time: {total_elapsed:.2f} seconds")
-        print(f"Total batches: {summary['total']}")
-        print(f"Completed: {summary['completed']}")
-        print(f"Failed: {summary['failed']}")
-        
-        if summary['failed'] > 0:
-            print(f"\n⚠️  Some batches failed. Use --retry-failed to retry them.")
-        
-        # Check for any found keys
-        print(f"\n🔍 Checking for found keys...")
-        found_files = []
-        for filename in os.listdir('.'):
-            if filename.startswith('batch_') and filename.endswith('.log'):
-                with open(filename, 'r') as f:
-                    content = f.read()
-                    if any(keyword in content.upper() for keyword in ['FOUND', 'KEY', 'SUCCESS']):
-                        found_files.append(filename)
-        
-        if found_files:
-            print(f"🎉 Check these files for possible found keys:")
-            for f in found_files:
-                print(f"  - {f}")
-        else:
-            print("No keys found in this session.")
+        # Save final progress
+        manager.save_progress()
 
 if __name__ == "__main__":
     main()
