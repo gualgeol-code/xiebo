@@ -26,7 +26,7 @@ LOG_COLUMNS = [
 ]
 
 # Konfigurasi batch
-MAX_BATCHES_PER_RUN = 1000  # Maksimal 1000 batch per eksekusi
+MAX_BATCHES_PER_RUN = 1000000  # Maksimal 1juta batch per eksekusi
 BATCH_SIZE = 2000000000000  # 2 triliun keys per batch
 
 # Global flag untuk menghentikan pencarian
