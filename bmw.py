@@ -11,25 +11,14 @@ LOG_FILE = "logbatch.txt"
 DRIVE_MOUNT_PATH = "/content/drive"
 DRIVE_FILE_PATH = "/content/drive/MyDrive/logbatch.txt"
 
-# Kolom-kolom untuk tabel log
+# Kolom-kolom untuk tabel log (DIPERKECIL)
 LOG_COLUMNS = [
     'batch_id',
     'start_hex',
     'range_bits',
-    'total_keys',
     'address_target',
-    'gpu_id',
     'status',
-    'found',
-    'wif_key',
-    'address_found',
-    'private_key',
-    'return_code',
-    'created_at',
-    'updated_at',
-    'started_at',
-    'completed_at',
-    'error_message'
+    'found'
 ]
 
 def save_to_drive():
@@ -49,16 +38,11 @@ def save_to_drive():
             dst = DRIVE_FILE_PATH
             
             shutil.copy(src, dst)
-            # HAPUS: Tidak tampilkan pesan save ke drive di terminal
-            # print(f"📁 Log saved to Google Drive: {dst}")
         else:
-            # HAPUS: Tidak tampilkan pesan
             pass
     except ImportError:
-        # HAPUS: Tidak tampilkan pesan
         pass
     except Exception as e:
-        # Hanya tampilkan error jika penting
         print(f"⚠️ Failed to save to Google Drive: {e}")
 
 def read_log_as_dict():
@@ -77,7 +61,6 @@ def read_log_as_dict():
                 if batch_id:
                     log_dict[batch_id] = row
     except Exception as e:
-        # Hanya tampilkan error jika penting
         print(f"⚠️ Error reading log file: {e}")
     
     return log_dict
@@ -95,9 +78,6 @@ def write_log_from_dict(log_dict):
             writer = csv.DictWriter(f, fieldnames=LOG_COLUMNS, delimiter='|')
             writer.writeheader()
             writer.writerows(rows)
-        
-        # HAPUS: Tidak tampilkan pesan update log di terminal
-        # print(f"📝 Log file updated with {len(rows)} entries")
         
         # Simpan ke Google Drive (silent)
         save_to_drive()
@@ -122,9 +102,6 @@ def update_batch_log(batch_info):
         
         # Tulis kembali log (silent)
         write_log_from_dict(log_dict)
-        
-        # HAPUS: Tidak tampilkan pesan update log di terminal
-        # print(f"📝 Log updated: Batch {batch_id} - {batch_info.get('status', 'N/A')}")
         
     except Exception as e:
         print(f"❌ Error updating log: {e}")
@@ -162,7 +139,7 @@ def parse_xiebo_output(output_text):
     return found_info
 
 def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
-    """Run xiebo binary directly"""
+    """Run xiebo binary langsung dan tampilkan outputnya"""
     cmd = ["./xiebo", "-gpuId", str(gpu_id), "-start", start_hex, 
            "-range", str(range_bits), address]
     
@@ -177,26 +154,38 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
                 'batch_id': str(batch_id),
                 'start_hex': start_hex,
                 'range_bits': str(range_bits),
-                'total_keys': '',
                 'address_target': address,
-                'gpu_id': str(gpu_id),
                 'status': 'inprogress',
-                'found': '',
-                'wif_key': '',
-                'address_found': '',
-                'private_key': '',
-                'return_code': '',
-                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'completed_at': '',
-                'error_message': ''
+                'found': ''
             }
             update_batch_log(batch_info)
         
-        # Jalankan xiebo dan tangkap output
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        output_text = result.stdout + result.stderr
+        # Jalankan xiebo dan tampilkan output secara real-time
+        print(f"\n📤 Starting xiebo process...\n")
+        
+        # Gunakan Popen untuk mendapatkan output real-time
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+        
+        # Tampilkan output secara real-time
+        output_lines = []
+        while True:
+            output_line = process.stdout.readline()
+            if output_line == '' and process.poll() is not None:
+                break
+            if output_line:
+                print(output_line.strip())
+                output_lines.append(output_line)
+        
+        # Tunggu proses selesai
+        return_code = process.wait()
+        output_text = ''.join(output_lines)
         
         # Parse output untuk mencari private key
         found_info = parse_xiebo_output(output_text)
@@ -204,30 +193,24 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
         # Update status berdasarkan hasil
         if batch_id is not None:
             batch_info['status'] = 'done'
-            batch_info['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            batch_info['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             batch_info['found'] = 'YES' if found_info['found'] else 'NO'
-            batch_info['return_code'] = str(result.returncode)
-            
-            if found_info['found']:
-                batch_info['wif_key'] = found_info['wif_key'] if found_info['wif_key'] else 'N/A'
-                batch_info['address_found'] = found_info['address'] if found_info['address'] else 'N/A'
-                batch_info['private_key'] = found_info['private_key'] if found_info['private_key'] else 'N/A'
-                
-                print(f"🎉 PRIVATE KEY FOUND!")
-                if found_info['wif_key']:
-                    print(f"   WIF Key: {found_info['wif_key']}")
-                if found_info['address']:
-                    print(f"   Address: {found_info['address']}")
-            else:
-                batch_info['wif_key'] = ''
-                batch_info['address_found'] = ''
-                batch_info['private_key'] = ''
-                print(f"🔍 Private key not found in this batch")
-            
             update_batch_log(batch_info)
         
-        return result.returncode, found_info
+        # Tampilkan hasil pencarian
+        print(f"\n{'='*60}")
+        if found_info['found']:
+            print(f"🎉 PRIVATE KEY FOUND!")
+            if found_info['wif_key']:
+                print(f"   WIF Key: {found_info['wif_key']}")
+            if found_info['address']:
+                print(f"   Address: {found_info['address']}")
+            if found_info['private_key'] and not found_info['wif_key'] and not found_info['address']:
+                print(f"   Private Key: {found_info['private_key']}")
+        else:
+            print(f"🔍 Private key not found in this batch")
+        print(f"{'='*60}")
+        
+        return return_code, found_info
         
     except KeyboardInterrupt:
         print("\n⚠️ Stopped by user")
@@ -238,20 +221,9 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
                 'batch_id': str(batch_id),
                 'start_hex': start_hex,
                 'range_bits': str(range_bits),
-                'total_keys': '',
                 'address_target': address,
-                'gpu_id': str(gpu_id),
                 'status': 'interrupted',
-                'found': '',
-                'wif_key': '',
-                'address_found': '',
-                'private_key': '',
-                'return_code': '130',
-                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'completed_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'error_message': 'Stopped by user'
+                'found': ''
             }
             update_batch_log(batch_info)
         
@@ -266,20 +238,9 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
                 'batch_id': str(batch_id),
                 'start_hex': start_hex,
                 'range_bits': str(range_bits),
-                'total_keys': '',
                 'address_target': address,
-                'gpu_id': str(gpu_id),
                 'status': 'error',
-                'found': '',
-                'wif_key': '',
-                'address_found': '',
-                'private_key': '',
-                'return_code': '1',
-                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'completed_at': '',
-                'error_message': error_msg
+                'found': ''
             }
             update_batch_log(batch_info)
         
@@ -292,7 +253,6 @@ def initialize_batch_log(start_hex, range_bits, address, gpu_id, num_batches, ba
     start_int = int(start_hex, 16)
     total_keys = 1 << range_bits
     end_int = start_int + total_keys - 1
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
     for i in range(num_batches):
         batch_start = start_int + (i * batch_size)
@@ -310,20 +270,9 @@ def initialize_batch_log(start_hex, range_bits, address, gpu_id, num_batches, ba
             'batch_id': str(i),
             'start_hex': batch_hex,
             'range_bits': str(batch_bits),
-            'total_keys': f"{batch_keys:,}",
             'address_target': address,
-            'gpu_id': str(gpu_id),
             'status': 'uncheck',
-            'found': '',
-            'wif_key': '',
-            'address_found': '',
-            'private_key': '',
-            'return_code': '',
-            'created_at': current_time,
-            'updated_at': current_time,
-            'started_at': '',
-            'completed_at': '',
-            'error_message': ''
+            'found': ''
         }
         
         # Hanya tambah jika belum ada
@@ -332,10 +281,6 @@ def initialize_batch_log(start_hex, range_bits, address, gpu_id, num_batches, ba
     
     # Tulis ke file (silent)
     write_log_from_dict(log_dict)
-    
-    # HAPUS: Tidak tampilkan pesan inisialisasi log
-    # print(f"📋 Initialized {num_batches} batch entries in {LOG_FILE}")
-    # print(f"📊 Log format: CSV with '|' delimiter")
     
     return log_dict
 
@@ -381,7 +326,7 @@ def display_compact_summary():
         return
     
     print(f"\n{'='*50}")
-    print("📊 LOG SUMMARY (Compact)")
+    print("📊 LOG SUMMARY")
     print(f"{'='*50}")
     print(f"Total batches: {total_batches}")
     print(f"Found private keys: {found_count}")
@@ -416,17 +361,16 @@ def main():
         range_bits = int(sys.argv[3])
         address = sys.argv[4]
         
-        print(f"Single run mode")
-        return_code, found_info = run_xiebo(gpu_id, start_hex, range_bits, address)
+        print(f"\n{'='*60}")
+        print(f"SINGLE RUN MODE")
+        print(f"{'='*60}")
+        print(f"GPU: {gpu_id}")
+        print(f"Start: 0x{start_hex}")
+        print(f"Range: {range_bits} bits")
+        print(f"Address: {address}")
+        print(f"{'='*60}")
         
-        if found_info['found']:
-            print("\n🎯 RESULT: PRIVATE KEY FOUND!")
-            if found_info['wif_key']:
-                print(f"   WIF Key: {found_info['wif_key']}")
-            if found_info['address']:
-                print(f"   Address: {found_info['address']}")
-            if found_info['private_key']:
-                print(f"   Private Key: {found_info['private_key']}")
+        return_code, found_info = run_xiebo(gpu_id, start_hex, range_bits, address)
         
         return return_code
     
@@ -453,7 +397,8 @@ def main():
         print(f"Total keys: {total_keys:,}")
         print(f"End: 0x{format(end_int, 'x')}")
         print(f"Batch size: {BATCH_SIZE:,} keys")
-        print(f"Log file: {LOG_FILE} (auto-saved to Google Drive)")
+        print(f"Address: {address}")
+        print(f"Log file: {LOG_FILE} (6 columns, auto-saved to Google Drive)")
         print(f"{'='*60}")
         
         # Calculate batches
@@ -494,15 +439,17 @@ def main():
             batch_hex = format(batch_start, 'x')
             
             # Run this batch
-            print(f"\n▶️  Starting batch {i+1}/{num_batches}")
-            print(f"   Start: 0x{batch_hex}")
-            print(f"   Bits: {batch_bits}")
-            print(f"   Keys: {batch_keys:,}")
+            print(f"\n{'='*60}")
+            print(f"▶️  BATCH {i+1}/{num_batches}")
+            print(f"{'='*60}")
+            print(f"Start: 0x{batch_hex}")
+            print(f"Bits: {batch_bits}")
+            print(f"Keys: {batch_keys:,}")
             
             return_code, found_info = run_xiebo(gpu_id, batch_hex, batch_bits, address, batch_id=i)
             
             if return_code == 0:
-                print(f"✅ Batch {i+1} completed")
+                print(f"✅ Batch {i+1} completed successfully")
             else:
                 print(f"⚠️  Batch {i+1} exited with code {return_code}")
             
@@ -510,15 +457,16 @@ def main():
             if (i + 1) % 10 == 0 or i == num_batches - 1:
                 total_processed = min((i + 1) * BATCH_SIZE, total_keys)
                 percentage = (total_processed / total_keys) * 100
-                print(f"\n📈 Progress: {i+1}/{num_batches} batches ({percentage:.1f}%)")
+                print(f"\n📈 Overall Progress: {i+1}/{num_batches} batches ({percentage:.1f}%)")
             
             # Delay between batches (except last one)
             if i < num_batches - 1:
-                print(f"⏱️  Waiting 5 seconds...")
+                print(f"\n⏱️  Waiting 5 seconds before next batch...")
                 time.sleep(5)
         
         print(f"\n{'='*60}")
-        print(f"✅ ALL BATCHES COMPLETED!")
+        print(f"🎉 ALL BATCHES COMPLETED!")
+        print(f"{'='*60}")
         
         # Tampilkan summary ringkas
         display_compact_summary()
@@ -526,10 +474,17 @@ def main():
         # Cek jika ada private key yang ditemukan
         total_batches, found_count, _ = get_log_summary()
         if found_count and found_count > 0:
-            print(f"\n🎯 {found_count} PRIVATE KEY(S) FOUND!")
-            print(f"   Check {LOG_FILE} for details")
-            print(f"   File also saved to Google Drive")
+            print(f"\n🔥 {found_count} PRIVATE KEY(S) FOUND!")
+            print(f"   Check {LOG_FILE} for batch details")
+            print(f"   File also auto-saved to Google Drive")
         
+        # Tampilkan isi log file terakhir
+        print(f"\n📄 Final log file content ({LOG_FILE}):")
+        print(f"{'='*60}")
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, 'r') as f:
+                content = f.read()
+                print(content)
         print(f"{'='*60}")
         
     else:
