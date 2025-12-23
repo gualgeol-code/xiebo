@@ -487,7 +487,7 @@ def main():
         range_bits = int(sys.argv[4])
         address = sys.argv[5]
         
-        BATCH_SIZE = 100000000000  # 100 M,10 T keys per batch 10000000000000
+        BATCH_SIZE = 1000000000000  # 100 M,10 T keys per batch 10000000000000
         
         # Calculate total
         start_int = int(start_hex, 16)
