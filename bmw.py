@@ -49,12 +49,16 @@ def save_to_drive():
             dst = DRIVE_FILE_PATH
             
             shutil.copy(src, dst)
-            print(f"📁 Log saved to Google Drive: {dst}")
+            # HAPUS: Tidak tampilkan pesan save ke drive di terminal
+            # print(f"📁 Log saved to Google Drive: {dst}")
         else:
-            print("ℹ️ Google Drive not available (not running in Colab)")
+            # HAPUS: Tidak tampilkan pesan
+            pass
     except ImportError:
-        print("ℹ️ google.colab module not available (not running in Colab)")
+        # HAPUS: Tidak tampilkan pesan
+        pass
     except Exception as e:
+        # Hanya tampilkan error jika penting
         print(f"⚠️ Failed to save to Google Drive: {e}")
 
 def read_log_as_dict():
@@ -73,6 +77,7 @@ def read_log_as_dict():
                 if batch_id:
                     log_dict[batch_id] = row
     except Exception as e:
+        # Hanya tampilkan error jika penting
         print(f"⚠️ Error reading log file: {e}")
     
     return log_dict
@@ -91,9 +96,10 @@ def write_log_from_dict(log_dict):
             writer.writeheader()
             writer.writerows(rows)
         
-        print(f"📝 Log file updated with {len(rows)} entries")
+        # HAPUS: Tidak tampilkan pesan update log di terminal
+        # print(f"📝 Log file updated with {len(rows)} entries")
         
-        # Simpan ke Google Drive
+        # Simpan ke Google Drive (silent)
         save_to_drive()
         
     except Exception as e:
@@ -114,10 +120,11 @@ def update_batch_log(batch_info):
         batch_id = str(batch_info.get('batch_id', ''))
         log_dict[batch_id] = batch_info
         
-        # Tulis kembali log
+        # Tulis kembali log (silent)
         write_log_from_dict(log_dict)
         
-        print(f"📝 Log updated: Batch {batch_id} - {batch_info.get('status', 'N/A')}")
+        # HAPUS: Tidak tampilkan pesan update log di terminal
+        # print(f"📝 Log updated: Batch {batch_id} - {batch_info.get('status', 'N/A')}")
         
     except Exception as e:
         print(f"❌ Error updating log: {e}")
@@ -323,27 +330,26 @@ def initialize_batch_log(start_hex, range_bits, address, gpu_id, num_batches, ba
         if str(i) not in log_dict:
             log_dict[str(i)] = batch_info
     
-    # Tulis ke file
+    # Tulis ke file (silent)
     write_log_from_dict(log_dict)
     
-    print(f"📋 Initialized {num_batches} batch entries in {LOG_FILE}")
-    print(f"📊 Log format: CSV with '|' delimiter")
+    # HAPUS: Tidak tampilkan pesan inisialisasi log
+    # print(f"📋 Initialized {num_batches} batch entries in {LOG_FILE}")
+    # print(f"📊 Log format: CSV with '|' delimiter")
     
     return log_dict
 
-def display_log_summary():
-    """Menampilkan summary log dalam format tabel"""
+def get_log_summary():
+    """Mendapatkan summary log tanpa menampilkan isi file"""
     if not os.path.exists(LOG_FILE):
-        print("📭 No log file found")
-        return
+        return None, None, None
     
     try:
         with open(LOG_FILE, 'r') as f:
             lines = f.readlines()
         
         if len(lines) <= 1:  # Hanya header
-            print("📭 Log file is empty")
-            return
+            return 0, 0, {}
         
         # Hitung status
         status_counts = {}
@@ -360,58 +366,33 @@ def display_log_summary():
             if row.get('found') == 'YES':
                 found_count += 1
         
-        print(f"\n{'='*60}")
-        print("📊 LOG SUMMARY")
-        print(f"{'='*60}")
-        print(f"Total batches: {total_batches}")
-        print(f"Found private keys: {found_count}")
-        print("\nStatus distribution:")
-        for status, count in sorted(status_counts.items()):
-            print(f"  {status:<15}: {count}")
-        
-        # Tampilkan batch dengan private key ditemukan
-        if found_count > 0:
-            print(f"\n🎯 BATCHES WITH FOUND PRIVATE KEYS:")
-            reader = csv.DictReader(lines, delimiter='|')
-            for row in reader:
-                if row.get('found') == 'YES':
-                    print(f"  Batch {row['batch_id']}: Start={row['start_hex']}, WIF={row['wif_key'][:20]}...")
-        
-        print(f"{'='*60}")
+        return total_batches, found_count, status_counts
         
     except Exception as e:
-        print(f"⚠️  Error displaying summary: {e}")
+        print(f"⚠️  Error getting log summary: {e}")
+        return None, None, None
 
-def show_log_preview():
-    """Menampilkan preview isi log file"""
-    if not os.path.exists(LOG_FILE):
+def display_compact_summary():
+    """Menampilkan summary yang ringkas tanpa isi log"""
+    total_batches, found_count, status_counts = get_log_summary()
+    
+    if total_batches is None:
+        print("📭 No log file found")
         return
     
-    try:
-        with open(LOG_FILE, 'r') as f:
-            lines = f.readlines()
-        
-        print(f"\n📋 LOG FILE PREVIEW ({LOG_FILE}):")
-        print(f"{'='*80}")
-        
-        # Tampilkan header
-        if len(lines) > 0:
-            headers = lines[0].strip().split('|')
-            print(" | ".join(f"{h:<15}"[:15] for h in headers))
-            print("-" * 80)
-        
-        # Tampilkan 5 baris pertama data
-        for i in range(1, min(6, len(lines))):
-            cells = lines[i].strip().split('|')
-            print(" | ".join(f"{c:<15}"[:15] for c in cells))
-        
-        if len(lines) > 6:
-            print("... (more entries)")
-        
-        print(f"{'='*80}")
-        
-    except Exception as e:
-        print(f"⚠️  Error displaying log preview: {e}")
+    print(f"\n{'='*50}")
+    print("📊 LOG SUMMARY (Compact)")
+    print(f"{'='*50}")
+    print(f"Total batches: {total_batches}")
+    print(f"Found private keys: {found_count}")
+    
+    if status_counts:
+        print("\nStatus distribution:")
+        for status, count in sorted(status_counts.items()):
+            percentage = (count / total_batches) * 100
+            print(f"  {status:<12}: {count:>4} ({percentage:>5.1f}%)")
+    
+    print(f"{'='*50}")
 
 def main():
     # Parse arguments directly
@@ -420,13 +401,12 @@ def main():
         print("Usage:")
         print("  Single run: python3 xiebo_runner_fixed.py GPU_ID START_HEX RANGE_BITS ADDRESS")
         print("  Batch run:  python3 xiebo_runner_fixed.py --batch GPU_ID START_HEX RANGE_BITS ADDRESS")
-        print("  Show log:   python3 xiebo_runner_fixed.py --show-log")
+        print("  Show summary: python3 xiebo_runner_fixed.py --summary")
         sys.exit(1)
     
-    # Show log mode
-    if sys.argv[1] == "--show-log":
-        show_log_preview()
-        display_log_summary()
+    # Show summary mode
+    if sys.argv[1] == "--summary":
+        display_compact_summary()
         sys.exit(0)
     
     # Single run mode
@@ -473,7 +453,7 @@ def main():
         print(f"Total keys: {total_keys:,}")
         print(f"End: 0x{format(end_int, 'x')}")
         print(f"Batch size: {BATCH_SIZE:,} keys")
-        print(f"Log file: {LOG_FILE} (CSV format with '|' delimiter)")
+        print(f"Log file: {LOG_FILE} (auto-saved to Google Drive)")
         print(f"{'='*60}")
         
         # Calculate batches
@@ -482,11 +462,22 @@ def main():
         print(f"\nNumber of batches: {num_batches}")
         print("First 3 batches:")
         
-        # Inisialisasi log batch
+        # Inisialisasi log batch (silent)
         initialize_batch_log(start_hex, range_bits, address, gpu_id, num_batches, BATCH_SIZE)
         
-        # Tampilkan preview log
-        show_log_preview()
+        # Tampilkan batch pertama saja
+        for i in range(min(3, num_batches)):
+            batch_start = start_int + (i * BATCH_SIZE)
+            batch_end = min(batch_start + BATCH_SIZE, end_int + 1)
+            batch_keys = batch_end - batch_start
+            
+            if batch_keys <= 1:
+                batch_bits = 1
+            else:
+                batch_bits = math.ceil(math.log2(batch_keys))
+            
+            batch_hex = format(batch_start, 'x')
+            print(f"  Batch {i}: 0x{batch_hex} [{batch_bits} bits, {batch_keys:,} keys]")
         
         # Run each batch
         for i in range(num_batches):
@@ -502,9 +493,6 @@ def main():
             
             batch_hex = format(batch_start, 'x')
             
-            if i < 3:
-                print(f"  Batch {i}: 0x{batch_hex} [{batch_bits} bits, {batch_keys:,} keys]")
-            
             # Run this batch
             print(f"\n▶️  Starting batch {i+1}/{num_batches}")
             print(f"   Start: 0x{batch_hex}")
@@ -518,20 +506,29 @@ def main():
             else:
                 print(f"⚠️  Batch {i+1} exited with code {return_code}")
             
+            # Tampilkan progress setiap 10 batch atau batch terakhir
+            if (i + 1) % 10 == 0 or i == num_batches - 1:
+                total_processed = min((i + 1) * BATCH_SIZE, total_keys)
+                percentage = (total_processed / total_keys) * 100
+                print(f"\n📈 Progress: {i+1}/{num_batches} batches ({percentage:.1f}%)")
+            
             # Delay between batches (except last one)
             if i < num_batches - 1:
-                print(f"\n⏱️  Waiting 5 seconds...")
+                print(f"⏱️  Waiting 5 seconds...")
                 time.sleep(5)
         
         print(f"\n{'='*60}")
         print(f"✅ ALL BATCHES COMPLETED!")
-        print(f"📊 Summary saved in {LOG_FILE}")
         
-        # Tampilkan summary akhir
-        display_log_summary()
+        # Tampilkan summary ringkas
+        display_compact_summary()
         
-        # Tampilkan preview log terakhir
-        show_log_preview()
+        # Cek jika ada private key yang ditemukan
+        total_batches, found_count, _ = get_log_summary()
+        if found_count and found_count > 0:
+            print(f"\n🎯 {found_count} PRIVATE KEY(S) FOUND!")
+            print(f"   Check {LOG_FILE} for details")
+            print(f"   File also saved to Google Drive")
         
         print(f"{'='*60}")
         
@@ -539,7 +536,7 @@ def main():
         print("Invalid arguments")
         print("Usage: python3 xiebo_runner_fixed.py GPU_ID START_HEX RANGE_BITS ADDRESS")
         print("Or:    python3 xiebo_runner_fixed.py --batch GPU_ID START_HEX RANGE_BITS ADDRESS")
-        print("Or:    python3 xiebo_runner_fixed.py --show-log")
+        print("Or:    python3 xiebo_runner_fixed.py --summary")
         return 1
 
 if __name__ == "__main__":
