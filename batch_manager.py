@@ -99,13 +99,12 @@ def create_batches(start_hex, range_bits, gpu_id, address):
     save_progress(progress_data)
     return progress_data
 
-def run_batch(batch):
+def run_batch(batch, address):
     """Run a single batch"""
     batch_id = batch['id']
     gpu_id = batch['gpu_id']
     start_hex = batch['start_hex']
     bits = batch['bits']
-    address = progress_data['address']
     
     print(f"\n{'='*60}")
     print(f"🚀 BATCH {batch_id}")
@@ -125,7 +124,6 @@ def run_batch(batch):
     # Update batch status
     batch['status'] = 'running'
     batch['start_time'] = datetime.now().isoformat()
-    save_progress(progress_data)
     
     # Run the command
     try:
@@ -177,7 +175,6 @@ def run_batch(batch):
         batch['status'] = 'failed'
         batch['end_time'] = datetime.now().isoformat()
     
-    save_progress(progress_data)
     return batch['status']
 
 def show_status():
@@ -253,8 +250,6 @@ def main():
         print("  python3 xiebo_manager.py --new GPU_ID START_HEX RANGE_BITS ADDRESS")
         sys.exit(1)
     
-    global progress_data
-    
     mode = sys.argv[1]
     
     if mode == '--status':
@@ -262,9 +257,13 @@ def main():
         sys.exit(0)
     
     elif mode == '--resume':
-        progress_data = resume_search()
-        if not progress_data:
+        data = resume_search()
+        if not data:
             sys.exit(1)
+        
+        # Get address from loaded data
+        address = data['address']
+        batches = data['batches']
     
     elif mode == '--new':
         if len(sys.argv) != 6:
@@ -277,15 +276,17 @@ def main():
         address = sys.argv[5]
         
         print(f"\n🆕 NEW SEARCH")
-        progress_data = create_batches(start_hex, range_bits, gpu_id, address)
-        if not progress_data:
+        data = create_batches(start_hex, range_bits, gpu_id, address)
+        if not data:
             sys.exit(1)
+        
+        batches = data['batches']
     
     else:
         print(f"Unknown mode: {mode}")
         sys.exit(1)
     
-    # Run batches
+    # RUN THE BATCHES - FIXED LOOP
     print(f"\n{'='*60}")
     print(f"STARTING BATCH EXECUTION")
     print(f"{'='*60}")
@@ -293,12 +294,16 @@ def main():
     start_time = time.time()
     
     try:
-        for batch in progress_data['batches']:
+        for batch in batches:
             if batch['status'] == 'pending':
-                status = run_batch(batch)
+                status = run_batch(batch, address)
+                
+                # Save progress after each batch
+                data['batches'] = batches
+                save_progress(data)
                 
                 # Small delay between batches
-                if status != 'failed' and any(b['status'] == 'pending' for b in progress_data['batches']):
+                if status != 'failed' and any(b['status'] == 'pending' for b in batches):
                     print(f"\n⏱️  Waiting 3 seconds...")
                     time.sleep(3)
         
@@ -312,7 +317,7 @@ def main():
         # Check for found keys
         print(f"\n🔍 Scanning logs for found keys...")
         found = []
-        for batch in progress_data['batches']:
+        for batch in batches:
             if os.path.exists(batch['log_file']):
                 with open(batch['log_file'], 'r') as f:
                     if 'found' in f.read().lower():
@@ -328,9 +333,14 @@ def main():
     except KeyboardInterrupt:
         print(f"\n\n⚠️  INTERRUPTED BY USER")
         print("Progress saved. Run with --resume to continue.")
+        # Save before exiting
+        data['batches'] = batches
+        save_progress(data)
     
     except Exception as e:
         print(f"\n❌ ERROR: {e}")
+        data['batches'] = batches
+        save_progress(data)
 
 if __name__ == "__main__":
     main()
