@@ -501,7 +501,7 @@ def main():
         address = sys.argv[5]
         
         # ⭐ PERUBAHAN UTAMA: Batch size dalam keys (100 miliar = 100,000,000,000)
-        BATCH_SIZE = 100000000000
+        BATCH_SIZE = 2000000000000
         
         # Calculate total
         start_int = int(start_hex, 16)
