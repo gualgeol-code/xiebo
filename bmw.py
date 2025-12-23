@@ -11,15 +11,19 @@ LOG_FILE = "logbatch.txt"
 DRIVE_MOUNT_PATH = "/content/drive"
 DRIVE_FILE_PATH = "/content/drive/MyDrive/logbatch.txt"
 
-# Kolom-kolom untuk tabel log (DIPERKECIL)
+# Kolom-kolom untuk tabel log
 LOG_COLUMNS = [
     'batch_id',
     'start_hex',
     'range_bits',
     'address_target',
     'status',
-    'found'
+    'found',
+    'wif'  # Kolom baru untuk menyimpan WIF key
 ]
+
+# Global flag untuk menghentikan pencarian
+STOP_SEARCH_FLAG = False
 
 def save_to_drive():
     """Menyimpan logbatch.txt ke Google Drive"""
@@ -108,38 +112,94 @@ def update_batch_log(batch_info):
 
 def parse_xiebo_output(output_text):
     """Parse output dari xiebo untuk mencari private key yang ditemukan"""
+    global STOP_SEARCH_FLAG
+    
     found_info = {
         'found': False,
+        'found_count': 0,  # Jumlah yang ditemukan dari "Found: X"
         'wif_key': '',
         'address': '',
-        'private_key': ''
+        'private_key_hex': '',
+        'private_key_wif': '',
+        'raw_output': '',
+        'speed_info': ''
     }
     
     lines = output_text.split('\n')
+    found_lines = []
+    
     for line in lines:
-        line_lower = line.lower()
-        if 'found' in line_lower and 'private' in line_lower:
+        line_stripped = line.strip()
+        line_lower = line_stripped.lower()
+        
+        # 1. Cari pattern "Found: X" di baris "Range Finished!"
+        if 'range finished!' in line_lower and 'found:' in line_lower:
+            # Ekstrak angka setelah "Found:"
+            import re
+            found_match = re.search(r'found:\s*(\d+)', line_lower)
+            if found_match:
+                found_count = int(found_match.group(1))
+                found_info['found_count'] = found_count
+                found_info['found'] = found_count > 0
+                found_info['speed_info'] = line_stripped
+                found_lines.append(line_stripped)
+                
+                # ⭐ PERUBAHAN UTAMA: Set flag berhenti jika ditemukan 1 atau lebih
+                if found_count >= 1:
+                    STOP_SEARCH_FLAG = True
+                    print(f"🚨 STOP_SEARCH_FLAG diaktifkan karena Found: {found_count}")
+        
+        # 2. Cari pattern Priv (HEX):
+        elif 'priv (hex):' in line_lower:
             found_info['found'] = True
+            found_info['private_key_hex'] = line_stripped.replace('Priv (HEX):', '').replace('Priv (hex):', '').strip()
+            found_lines.append(line_stripped)
+        
+        # 3. Cari pattern Priv (WIF):
+        elif 'priv (wif):' in line_lower:
+            found_info['found'] = True
+            wif_value = line_stripped.replace('Priv (WIF):', '').replace('Priv (wif):', '').strip()
+            found_info['private_key_wif'] = wif_value
             
-            # Coba ekstrak informasi
-            if 'wif' in line_lower:
-                parts = line.split(':')
-                if len(parts) > 1:
-                    found_info['wif_key'] = parts[1].strip()
-            
-            if 'address' in line_lower:
-                parts = line.split(':')
-                if len(parts) > 1:
-                    found_info['address'] = parts[1].strip()
-            
-            # Simpan line lengkap sebagai private_key jika format tidak standar
-            if not found_info['wif_key'] and not found_info['address']:
-                found_info['private_key'] = line.strip()
+            # Ambil 60 karakter pertama dari WIF key
+            if len(wif_value) >= 60:
+                found_info['wif_key'] = wif_value[:60]
+            else:
+                found_info['wif_key'] = wif_value
+                
+            found_lines.append(line_stripped)
+        
+        # 4. Cari pattern Address:
+        elif 'address:' in line_lower and found_info['found']:
+            found_info['address'] = line_stripped.replace('Address:', '').replace('address:', '').strip()
+            found_lines.append(line_stripped)
+        
+        # 5. Cari pattern "Found" atau "Success" lainnya
+        elif any(keyword in line_lower for keyword in ['found', 'success', 'match']) and 'private' in line_lower:
+            found_info['found'] = True
+            found_lines.append(line_stripped)
+    
+    # Gabungkan semua line yang ditemukan
+    if found_lines:
+        found_info['raw_output'] = '\n'.join(found_lines)
+        
+        # Jika WIF key ditemukan, pastikan wif_key terisi
+        if found_info['private_key_wif'] and not found_info['wif_key']:
+            wif_value = found_info['private_key_wif']
+            if len(wif_value) >= 60:
+                found_info['wif_key'] = wif_value[:60]
+            else:
+                found_info['wif_key'] = wif_value
+        # Jika HEX ditemukan tapi WIF tidak, gunakan HEX sebagai private_key
+        elif found_info['private_key_hex'] and not found_info['wif_key']:
+            found_info['wif_key'] = found_info['private_key_hex'][:60] if len(found_info['private_key_hex']) >= 60 else found_info['private_key_hex']
     
     return found_info
 
 def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
     """Run xiebo binary langsung dan tampilkan outputnya"""
+    global STOP_SEARCH_FLAG
+    
     cmd = ["./xiebo", "-gpuId", str(gpu_id), "-start", start_hex, 
            "-range", str(range_bits), address]
     
@@ -156,12 +216,14 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
                 'range_bits': str(range_bits),
                 'address_target': address,
                 'status': 'inprogress',
-                'found': ''
+                'found': '',
+                'wif': ''
             }
             update_batch_log(batch_info)
         
         # Jalankan xiebo dan tampilkan output secara real-time
         print(f"\n📤 Starting xiebo process...\n")
+        print(f"{'-'*60}")
         
         # Gunakan Popen untuk mendapatkan output real-time
         process = subprocess.Popen(
@@ -180,7 +242,10 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
             if output_line == '' and process.poll() is not None:
                 break
             if output_line:
-                print(output_line.strip())
+                # Tampilkan output dengan format yang lebih baik
+                stripped_line = output_line.strip()
+                if stripped_line:
+                    print(f"   {stripped_line}")
                 output_lines.append(output_line)
         
         # Tunggu proses selesai
@@ -193,27 +258,59 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
         # Update status berdasarkan hasil
         if batch_id is not None:
             batch_info['status'] = 'done'
-            batch_info['found'] = 'YES' if found_info['found'] else 'NO'
+            
+            # Tentukan nilai 'found' berdasarkan found_count atau found status
+            if found_info['found_count'] > 0:
+                batch_info['found'] = 'YES'
+            elif found_info['found']:
+                batch_info['found'] = 'YES'
+            else:
+                batch_info['found'] = 'NO'
+            
+            # Simpan WIF key ke kolom wif (60 karakter pertama)
+            if found_info['wif_key']:
+                batch_info['wif'] = found_info['wif_key'][:60]
+            else:
+                batch_info['wif'] = ''
+                
             update_batch_log(batch_info)
         
         # Tampilkan hasil pencarian
         print(f"\n{'='*60}")
-        if found_info['found']:
-            print(f"🎉 PRIVATE KEY FOUND!")
-            if found_info['wif_key']:
-                print(f"   WIF Key: {found_info['wif_key']}")
-            if found_info['address']:
-                print(f"   Address: {found_info['address']}")
-            if found_info['private_key'] and not found_info['wif_key'] and not found_info['address']:
-                print(f"   Private Key: {found_info['private_key']}")
+        print(f"🔍 SEARCH RESULT")
+        print(f"{'='*60}")
+        
+        if found_info['found_count'] > 0:
+            print(f"✅ FOUND: {found_info['found_count']} PRIVATE KEY(S)!")
+        elif found_info['found']:
+            print(f"✅ PRIVATE KEY FOUND!")
         else:
-            print(f"🔍 Private key not found in this batch")
+            print(f"❌ Private key not found in this batch")
+        
+        if found_info['speed_info']:
+            print(f"\n📊 {found_info['speed_info']}")
+        
+        if found_info['found'] or found_info['found_count'] > 0:
+            print(f"\n📋 Found information:")
+            if found_info['raw_output']:
+                for line in found_info['raw_output'].split('\n'):
+                    print(f"   {line}")
+            else:
+                if found_info['private_key_hex']:
+                    print(f"   Priv (HEX): {found_info['private_key_hex']}")
+                if found_info['private_key_wif']:
+                    print(f"   Priv (WIF): {found_info['private_key_wif']}")
+                if found_info['address']:
+                    print(f"   Address: {found_info['address']}")
+                if found_info['wif_key']:
+                    print(f"   WIF Key (first 60 chars): {found_info['wif_key']}")
+        
         print(f"{'='*60}")
         
         return return_code, found_info
         
     except KeyboardInterrupt:
-        print("\n⚠️ Stopped by user")
+        print("\n\n⚠️ Stopped by user")
         
         # Update status jika batch diinterupsi
         if batch_id is not None:
@@ -223,14 +320,15 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
                 'range_bits': str(range_bits),
                 'address_target': address,
                 'status': 'interrupted',
-                'found': ''
+                'found': '',
+                'wif': ''
             }
             update_batch_log(batch_info)
         
         return 130, {'found': False}
     except Exception as e:
         error_msg = str(e)
-        print(f"❌ Error: {error_msg}")
+        print(f"\n❌ Error: {error_msg}")
         
         # Update status error jika ada batch_id
         if batch_id is not None:
@@ -240,7 +338,8 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
                 'range_bits': str(range_bits),
                 'address_target': address,
                 'status': 'error',
-                'found': ''
+                'found': '',
+                'wif': ''
             }
             update_batch_log(batch_info)
         
@@ -272,7 +371,8 @@ def initialize_batch_log(start_hex, range_bits, address, gpu_id, num_batches, ba
             'range_bits': str(batch_bits),
             'address_target': address,
             'status': 'uncheck',
-            'found': ''
+            'found': '',
+            'wif': ''
         }
         
         # Hanya tambah jika belum ada
@@ -340,13 +440,19 @@ def display_compact_summary():
     print(f"{'='*50}")
 
 def main():
+    global STOP_SEARCH_FLAG
+    
+    # Reset flag stop search setiap kali program dijalankan
+    STOP_SEARCH_FLAG = False
+    
     # Parse arguments directly
     if len(sys.argv) < 2:
-        print("Xiebo Batch Runner")
+        print("Xiebo Batch Runner with Auto-Stop Feature")
         print("Usage:")
         print("  Single run: python3 xiebo_runner_fixed.py GPU_ID START_HEX RANGE_BITS ADDRESS")
         print("  Batch run:  python3 xiebo_runner_fixed.py --batch GPU_ID START_HEX RANGE_BITS ADDRESS")
         print("  Show summary: python3 xiebo_runner_fixed.py --summary")
+        print("\n⚠️  FEATURE: Auto-stop ketika ditemukan Found: 1 atau lebih")
         sys.exit(1)
     
     # Show summary mode
@@ -389,7 +495,7 @@ def main():
         end_int = start_int + total_keys - 1
         
         print(f"\n{'='*60}")
-        print(f"BATCH MODE")
+        print(f"BATCH MODE (with AUTO-STOP when Found: 1+)")
         print(f"{'='*60}")
         print(f"GPU: {gpu_id}")
         print(f"Start: 0x{start_hex}")
@@ -398,7 +504,8 @@ def main():
         print(f"End: 0x{format(end_int, 'x')}")
         print(f"Batch size: {BATCH_SIZE:,} keys")
         print(f"Address: {address}")
-        print(f"Log file: {LOG_FILE} (6 columns, auto-saved to Google Drive)")
+        print(f"Log file: {LOG_FILE} (7 columns, auto-saved to Google Drive)")
+        print(f"⚠️  AUTO-STOP: Pencarian akan berhenti otomatis jika ditemukan Found: 1 atau lebih")
         print(f"{'='*60}")
         
         # Calculate batches
@@ -426,6 +533,16 @@ def main():
         
         # Run each batch
         for i in range(num_batches):
+            # ⭐ PERUBAHAN UTAMA: Cek flag stop search sebelum menjalankan batch
+            if STOP_SEARCH_FLAG:
+                print(f"\n{'='*60}")
+                print(f"🚨 AUTO-STOP TRIGGERED!")
+                print(f"{'='*60}")
+                print(f"Pencarian dihentikan karena private key telah ditemukan")
+                print(f"Batch yang tersisa ({i+1}/{num_batches}) tidak akan dijalankan")
+                print(f"{'='*60}")
+                break
+            
             batch_start = start_int + (i * BATCH_SIZE)
             batch_end = min(batch_start + BATCH_SIZE, end_int + 1)
             batch_keys = batch_end - batch_start
@@ -459,13 +576,16 @@ def main():
                 percentage = (total_processed / total_keys) * 100
                 print(f"\n📈 Overall Progress: {i+1}/{num_batches} batches ({percentage:.1f}%)")
             
-            # Delay between batches (except last one)
-            if i < num_batches - 1:
+            # ⭐ PERUBAHAN UTAMA: Delay antara batch hanya jika tidak ada flag stop
+            if i < num_batches - 1 and not STOP_SEARCH_FLAG:
                 print(f"\n⏱️  Waiting 5 seconds before next batch...")
                 time.sleep(5)
         
         print(f"\n{'='*60}")
-        print(f"🎉 ALL BATCHES COMPLETED!")
+        if STOP_SEARCH_FLAG:
+            print(f"🎯 SEARCH STOPPED - PRIVATE KEY FOUND!")
+        else:
+            print(f"🎉 ALL BATCHES COMPLETED!")
         print(f"{'='*60}")
         
         # Tampilkan summary ringkas
@@ -475,7 +595,7 @@ def main():
         total_batches, found_count, _ = get_log_summary()
         if found_count and found_count > 0:
             print(f"\n🔥 {found_count} PRIVATE KEY(S) FOUND!")
-            print(f"   Check {LOG_FILE} for batch details")
+            print(f"   Check {LOG_FILE} for batch details and WIF keys")
             print(f"   File also auto-saved to Google Drive")
         
         # Tampilkan isi log file terakhir
