@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-"""
-Xiebo Runner - FIXED VERSION
-Masalah: Program berhenti setelah planning karena menunggu output dari subprocess
-Solusi: Gunakan subprocess.run() tanpa capture output
-"""
-
 import subprocess
 import sys
 import os
