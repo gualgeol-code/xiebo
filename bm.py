@@ -11,14 +11,15 @@ LOG_FILE = "logbatch.txt"
 DRIVE_MOUNT_PATH = "/content/drive"
 DRIVE_FILE_PATH = "/content/drive/MyDrive/logbatch.txt"
 
-# Kolom-kolom untuk tabel log (DIPERKECIL)
+# Kolom-kolom untuk tabel log
 LOG_COLUMNS = [
     'batch_id',
     'start_hex',
     'range_bits',
     'address_target',
     'status',
-    'found'
+    'found',
+    'wif'  # Kolom baru untuk menyimpan WIF key
 ]
 
 def save_to_drive():
@@ -110,11 +111,13 @@ def parse_xiebo_output(output_text):
     """Parse output dari xiebo untuk mencari private key yang ditemukan"""
     found_info = {
         'found': False,
+        'found_count': 0,  # Jumlah yang ditemukan dari "Found: X"
         'wif_key': '',
         'address': '',
         'private_key_hex': '',
         'private_key_wif': '',
-        'raw_output': ''
+        'raw_output': '',
+        'speed_info': ''
     }
     
     lines = output_text.split('\n')
@@ -122,25 +125,46 @@ def parse_xiebo_output(output_text):
     
     for line in lines:
         line_stripped = line.strip()
+        line_lower = line_stripped.lower()  # PERBAIKAN: Definisikan line_lower
         
-        # Cari pattern Priv (HEX):
-        if 'Priv (HEX):' in line_stripped:
+        # 1. Cari pattern "Found: X" di baris "Range Finished!"
+        if 'range finished!' in line_lower and 'found:' in line_lower:
+            # Ekstrak angka setelah "Found:"
+            import re
+            found_match = re.search(r'found:\s*(\d+)', line_lower)
+            if found_match:
+                found_count = int(found_match.group(1))
+                found_info['found_count'] = found_count
+                found_info['found'] = found_count > 0
+                found_info['speed_info'] = line_stripped
+                found_lines.append(line_stripped)
+        
+        # 2. Cari pattern Priv (HEX):
+        elif 'priv (hex):' in line_lower:
             found_info['found'] = True
-            found_info['private_key_hex'] = line_stripped.replace('Priv (HEX):', '').strip()
+            found_info['private_key_hex'] = line_stripped.replace('Priv (HEX):', '').replace('Priv (hex):', '').strip()
             found_lines.append(line_stripped)
         
-        # Cari pattern Priv (WIF):
-        elif 'Priv (WIF):' in line_stripped:
+        # 3. Cari pattern Priv (WIF):
+        elif 'priv (wif):' in line_lower:
             found_info['found'] = True
-            found_info['private_key_wif'] = line_stripped.replace('Priv (WIF):', '').strip()
+            wif_value = line_stripped.replace('Priv (WIF):', '').replace('Priv (wif):', '').strip()
+            found_info['private_key_wif'] = wif_value
+            
+            # Ambil 60 karakter pertama dari WIF key
+            if len(wif_value) >= 60:
+                found_info['wif_key'] = wif_value[:60]
+            else:
+                found_info['wif_key'] = wif_value
+                
             found_lines.append(line_stripped)
         
-        # Cari pattern Address:
-        elif 'Address:' in line_stripped and found_info['found']:
-            found_info['address'] = line_stripped.replace('Address:', '').strip()
+        # 4. Cari pattern Address:
+        elif 'address:' in line_lower and found_info['found']:
+            found_info['address'] = line_stripped.replace('Address:', '').replace('address:', '').strip()
             found_lines.append(line_stripped)
         
-        # Cari pattern Found atau found (case insensitive)
+        # 5. Cari pattern "Found" atau "Success" lainnya
         elif any(keyword in line_lower for keyword in ['found', 'success', 'match']) and 'private' in line_lower:
             found_info['found'] = True
             found_lines.append(line_stripped)
@@ -149,12 +173,16 @@ def parse_xiebo_output(output_text):
     if found_lines:
         found_info['raw_output'] = '\n'.join(found_lines)
         
-        # Jika WIF key ditemukan, gunakan sebagai wif_key
-        if found_info['private_key_wif']:
-            found_info['wif_key'] = found_info['private_key_wif']
+        # Jika WIF key ditemukan, pastikan wif_key terisi
+        if found_info['private_key_wif'] and not found_info['wif_key']:
+            wif_value = found_info['private_key_wif']
+            if len(wif_value) >= 60:
+                found_info['wif_key'] = wif_value[:60]
+            else:
+                found_info['wif_key'] = wif_value
         # Jika HEX ditemukan tapi WIF tidak, gunakan HEX sebagai private_key
-        elif found_info['private_key_hex']:
-            found_info['private_key'] = found_info['private_key_hex']
+        elif found_info['private_key_hex'] and not found_info['wif_key']:
+            found_info['wif_key'] = found_info['private_key_hex'][:60] if len(found_info['private_key_hex']) >= 60 else found_info['private_key_hex']
     
     return found_info
 
@@ -176,7 +204,8 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
                 'range_bits': str(range_bits),
                 'address_target': address,
                 'status': 'inprogress',
-                'found': ''
+                'found': '',
+                'wif': ''
             }
             update_batch_log(batch_info)
         
@@ -217,7 +246,21 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
         # Update status berdasarkan hasil
         if batch_id is not None:
             batch_info['status'] = 'done'
-            batch_info['found'] = 'YES' if found_info['found'] else 'NO'
+            
+            # Tentukan nilai 'found' berdasarkan found_count atau found status
+            if found_info['found_count'] > 0:
+                batch_info['found'] = 'YES'
+            elif found_info['found']:
+                batch_info['found'] = 'YES'
+            else:
+                batch_info['found'] = 'NO'
+            
+            # Simpan WIF key ke kolom wif (60 karakter pertama)
+            if found_info['wif_key']:
+                batch_info['wif'] = found_info['wif_key'][:60]
+            else:
+                batch_info['wif'] = ''
+                
             update_batch_log(batch_info)
         
         # Tampilkan hasil pencarian
@@ -225,13 +268,19 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
         print(f"🔍 SEARCH RESULT")
         print(f"{'='*60}")
         
-        if found_info['found']:
+        if found_info['found_count'] > 0:
+            print(f"✅ FOUND: {found_info['found_count']} PRIVATE KEY(S)!")
+        elif found_info['found']:
             print(f"✅ PRIVATE KEY FOUND!")
-            print(f"")
-            
-            # Tampilkan semua informasi yang ditemukan
+        else:
+            print(f"❌ Private key not found in this batch")
+        
+        if found_info['speed_info']:
+            print(f"\n📊 {found_info['speed_info']}")
+        
+        if found_info['found'] or found_info['found_count'] > 0:
+            print(f"\n📋 Found information:")
             if found_info['raw_output']:
-                print(f"📋 Found information:")
                 for line in found_info['raw_output'].split('\n'):
                     print(f"   {line}")
             else:
@@ -242,9 +291,7 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
                 if found_info['address']:
                     print(f"   Address: {found_info['address']}")
                 if found_info['wif_key']:
-                    print(f"   WIF Key: {found_info['wif_key']}")
-        else:
-            print(f"❌ Private key not found in this batch")
+                    print(f"   WIF Key (first 60 chars): {found_info['wif_key']}")
         
         print(f"{'='*60}")
         
@@ -261,7 +308,8 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
                 'range_bits': str(range_bits),
                 'address_target': address,
                 'status': 'interrupted',
-                'found': ''
+                'found': '',
+                'wif': ''
             }
             update_batch_log(batch_info)
         
@@ -278,7 +326,8 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
                 'range_bits': str(range_bits),
                 'address_target': address,
                 'status': 'error',
-                'found': ''
+                'found': '',
+                'wif': ''
             }
             update_batch_log(batch_info)
         
@@ -310,7 +359,8 @@ def initialize_batch_log(start_hex, range_bits, address, gpu_id, num_batches, ba
             'range_bits': str(batch_bits),
             'address_target': address,
             'status': 'uncheck',
-            'found': ''
+            'found': '',
+            'wif': ''
         }
         
         # Hanya tambah jika belum ada
@@ -436,7 +486,7 @@ def main():
         print(f"End: 0x{format(end_int, 'x')}")
         print(f"Batch size: {BATCH_SIZE:,} keys")
         print(f"Address: {address}")
-        print(f"Log file: {LOG_FILE} (6 columns, auto-saved to Google Drive)")
+        print(f"Log file: {LOG_FILE} (7 columns, auto-saved to Google Drive)")
         print(f"{'='*60}")
         
         # Calculate batches
@@ -513,7 +563,7 @@ def main():
         total_batches, found_count, _ = get_log_summary()
         if found_count and found_count > 0:
             print(f"\n🔥 {found_count} PRIVATE KEY(S) FOUND!")
-            print(f"   Check {LOG_FILE} for batch details")
+            print(f"   Check {LOG_FILE} for batch details and WIF keys")
             print(f"   File also auto-saved to Google Drive")
         
         # Tampilkan isi log file terakhir
