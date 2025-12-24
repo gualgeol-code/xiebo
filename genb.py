@@ -11,16 +11,11 @@ DRIVE_MOUNT_PATH = "/content/drive"
 DRIVE_FILE_PATH = "/content/drive/MyDrive/generated_batches.txt"
 DRIVE_NEXT_BATCH_PATH = "/content/drive/MyDrive/nextbatch.txt"
 
-# Kolom-kolom untuk tabel batch
+# Kolom-kolom untuk tabel batch (hanya 2 kolom)
 BATCH_COLUMNS = [
     'batch_id',
     'start_hex',
-    'range_bits',
-    'total_keys',
-    'end_hex',
-    'address_target',
-    'generated_time',
-    'status'
+    'end_hex'
 ]
 
 # Konfigurasi batch - sebagai variabel module-level
@@ -189,6 +184,7 @@ def generate_batches(start_hex, range_bits, address, batch_size, start_batch_id=
     print(f"Total batches needed: {total_batches_needed:,}")
     print(f"Batches to generate: {batches_to_generate}")
     print(f"Starting batch ID: {start_batch_id}")
+    print(f"Output format: {BATCH_COLUMNS}")
     print(f"{'='*60}")
     
     batch_dict = {}
@@ -199,29 +195,24 @@ def generate_batches(start_hex, range_bits, address, batch_size, start_batch_id=
         batch_end = min(batch_start + batch_size, end_int + 1)
         batch_keys = batch_end - batch_start
         
-        # Hitung bits untuk batch ini
+        # Hitung bits untuk batch ini (untuk display saja, tidak disimpan)
         batch_bits = calculate_range_bits(batch_keys)
         
         batch_start_hex = format(batch_start, 'x')
         batch_end_hex = format(batch_end - 1, 'x')  # -1 karena end inklusif
         
-        # Buat informasi batch
+        # Buat informasi batch (hanya 2 kolom)
         batch_info = {
             'batch_id': str(batch_id),
             'start_hex': batch_start_hex,
-            'range_bits': str(batch_bits),
-            'total_keys': str(batch_keys),
-            'end_hex': batch_end_hex,
-            'address_target': address,
-            'generated_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'status': 'generated'
+            'end_hex': batch_end_hex
         }
         
         batch_dict[str(batch_id)] = batch_info
         
         # Tampilkan progress setiap 10 batch atau batch terakhir
         if (i + 1) % 10 == 0 or i == batches_to_generate - 1:
-            print(f"✅ Generated batch {i+1}/{batches_to_generate}: ID={batch_id}, Start=0x{batch_start_hex}, Keys={batch_keys:,}, Bits={batch_bits}")
+            print(f"✅ Generated batch {i+1}/{batches_to_generate}: ID={batch_id}, Start=0x{batch_start_hex}, End=0x{batch_end_hex}, Keys={batch_keys:,}")
     
     # Tulis batch ke file
     write_batches_from_dict(batch_dict)
@@ -260,29 +251,25 @@ def display_batch_summary():
         print(f"📊 BATCH SUMMARY")
         print(f"{'='*60}")
         print(f"Total batches generated: {total_batches}")
+        print(f"File size: {os.path.getsize(LOG_FILE):,} bytes")
         
-        # Hitung total keys
-        total_keys = 0
-        for batch_id, batch in batch_dict.items():
-            if batch_id.isdigit():
-                total_keys += int(batch.get('total_keys', 0))
+        # Tampilkan format file
+        print(f"\n📋 File format: {BATCH_COLUMNS}")
         
-        print(f"Total keys covered: {total_keys:,}")
-        
-        # Tampilkan 10 batch pertama dan terakhir
+        # Tampilkan 5 batch pertama dan terakhir
         print(f"\n📋 First 5 batches:")
         sorted_ids = sorted([int(id) for id in batch_dict.keys() if id.isdigit()])
         for i in range(min(5, len(sorted_ids))):
             batch_id = str(sorted_ids[i])
             batch = batch_dict[batch_id]
-            print(f"  ID: {batch_id}, Start: 0x{batch['start_hex']}, Keys: {int(batch['total_keys']):,}")
+            print(f"  ID: {batch_id}, Start: 0x{batch['start_hex']}, End: 0x{batch['end_hex']}")
         
         if len(sorted_ids) > 5:
             print(f"\n📋 Last 5 batches:")
             for i in range(max(0, len(sorted_ids)-5), len(sorted_ids)):
                 batch_id = str(sorted_ids[i])
                 batch = batch_dict[batch_id]
-                print(f"  ID: {batch_id}, Start: 0x{batch['start_hex']}, Keys: {int(batch['total_keys']):,}")
+                print(f"  ID: {batch_id}, Start: 0x{batch['start_hex']}, End: 0x{batch['end_hex']}")
         
         # Info next batch jika ada
         next_info = load_next_batch_info()
@@ -321,6 +308,7 @@ def continue_generation(batch_size, max_batches=None):
     print(f"Batches already generated: {batches_generated}")
     print(f"Total batches needed: {total_batches}")
     print(f"Timestamp: {next_info.get('timestamp', 'unknown')}")
+    print(f"Output format: {BATCH_COLUMNS}")
     print(f"{'='*60}")
     
     # Hitung jumlah batch yang tersisa
@@ -390,18 +378,47 @@ def export_to_csv(output_file="batches.csv"):
                 writer.writerow(numeric_batches[str(batch_id)])
         
         print(f"✅ Exported {len(numeric_batches)} batches to {output_file}")
+        print(f"   File size: {os.path.getsize(output_file):,} bytes")
         
     except Exception as e:
         print(f"❌ Error exporting to CSV: {e}")
+
+def display_file_info():
+    """Menampilkan informasi file generated_batches.txt"""
+    if not os.path.exists(LOG_FILE):
+        print("📭 No generated_batches.txt file found")
+        return
+    
+    try:
+        file_size = os.path.getsize(LOG_FILE)
+        print(f"\n📁 File: {LOG_FILE}")
+        print(f"📏 Size: {file_size:,} bytes ({file_size/1024:.2f} KB)")
+        
+        # Baca beberapa baris pertama
+        print(f"\n📋 First 3 lines:")
+        with open(LOG_FILE, 'r') as f:
+            for i in range(4):  # Header + 3 data
+                line = f.readline()
+                if line:
+                    print(f"  {i+1}: {line.strip()}")
+        
+        # Hitung jumlah batch
+        batch_dict = read_batches_as_dict()
+        total_batches = len([id for id in batch_dict.keys() if id.isdigit()])
+        print(f"\n📊 Total batches in file: {total_batches}")
+        
+    except Exception as e:
+        print(f"❌ Error displaying file info: {e}")
 
 def main():
     """Main function untuk generate batch"""
     
     print("\n" + "="*60)
-    print("BATCH GENERATOR TOOL")
+    print("BATCH GENERATOR TOOL - MINIMAL FORMAT")
     print("="*60)
     print("Tool untuk generate batch dari range hex")
-    print("Tidak menjalankan xiebo, hanya generate batch information")
+    print(f"Output format: {BATCH_COLUMNS}")
+    print(f"File size optimized (minimal columns)")
     print("="*60)
     
     if len(sys.argv) < 2:
@@ -411,14 +428,21 @@ def main():
         print("  Show summary: python3 genb.py --summary")
         print("  Export to CSV: python3 genb.py --export [filename.csv]")
         print("  Set batch size: python3 genb.py --set-size SIZE")
+        print("  File info: python3 genb.py --info")
         print("\nOptions:")
         print(f"  Default batch size: {BATCH_SIZE:,} keys")
         print(f"  Default address: {DEFAULT_ADDRESS}")
         print(f"  Max batches per run: {MAX_BATCHES_PER_RUN}")
+        print(f"  Output columns: {BATCH_COLUMNS}")
         sys.exit(1)
     
+    # Show file info mode
+    if sys.argv[1] == "--info":
+        display_file_info()
+        sys.exit(0)
+    
     # Show summary mode
-    if sys.argv[1] == "--summary":
+    elif sys.argv[1] == "--summary":
         display_batch_summary()
         sys.exit(0)
     
@@ -494,6 +518,12 @@ def main():
         print(f"{'='*60}")
         print(f"Generated {batches_generated} batches")
         print(f"Total batches needed: {total_batches_needed}")
+        print(f"File: {LOG_FILE} (format: {BATCH_COLUMNS})")
+        
+        # Tampilkan ukuran file
+        if os.path.exists(LOG_FILE):
+            file_size = os.path.getsize(LOG_FILE)
+            print(f"File size: {file_size:,} bytes")
         
         if batches_generated < total_batches_needed:
             print(f"Batches remaining: {total_batches_needed - batches_generated}")
@@ -506,6 +536,7 @@ def main():
         print("Usage: python3 genb.py --generate START_HEX RANGE_BITS [ADDRESS]")
         print("Or:    python3 genb.py --continue")
         print("Or:    python3 genb.py --summary")
+        print("Or:    python3 genb.py --info")
         sys.exit(1)
 
 if __name__ == "__main__":
