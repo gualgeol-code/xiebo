@@ -53,34 +53,60 @@ def get_current_batch_file():
     batch_files.sort()
     return batch_files[-1]  # File dengan index tertinggi
 
-def save_to_drive():
+def save_to_drive(silent=False):
     """Menyimpan file ke Google Drive"""
     try:
         # Cek apakah Google Drive tersedia (untuk Google Colab)
-        if os.path.exists(DRIVE_MOUNT_PATH):
+        if not os.path.exists(DRIVE_MOUNT_PATH):
+            if not silent:
+                print("⚠️ Google Drive not mounted. Skipping save to drive.")
+            return False
+        
+        try:
             from google.colab import drive
-            
-            # Mount drive jika belum
-            if not os.path.exists(os.path.join(DRIVE_MOUNT_PATH, "MyDrive")):
-                drive.mount(DRIVE_MOUNT_PATH, force_remount=False)
-            
-            # Salin semua file batch
-            for file in os.listdir('.'):
-                if file.startswith(LOG_FILE_PREFIX) and file.endswith(LOG_FILE_EXT):
-                    src = file
-                    dst = f"{DRIVE_MOUNT_PATH}/MyDrive/{file}"
-                    shutil.copy(src, dst)
-            
-            # Salin file nextbatch.txt jika ada
-            if os.path.exists(NEXT_BATCH_FILE):
-                src_next = NEXT_BATCH_FILE
-                dst_next = DRIVE_NEXT_BATCH_PATH
-                shutil.copy(src_next, dst_next)
+        except ImportError:
+            if not silent:
+                print("⚠️ Google Colab not detected. Skipping Google Drive save.")
+            return False
+        
+        # Mount drive jika belum
+        drive_mydrive_path = os.path.join(DRIVE_MOUNT_PATH, "MyDrive")
+        if not os.path.exists(drive_mydrive_path):
+            if not silent:
+                print("🔄 Mounting Google Drive...")
+            drive.mount(DRIVE_MOUNT_PATH, force_remount=False)
+        
+        # Salin file batch yang sedang aktif
+        if CURRENT_LOG_FILE and os.path.exists(CURRENT_LOG_FILE):
+            src = CURRENT_LOG_FILE
+            dst = os.path.join(drive_mydrive_path, CURRENT_LOG_FILE)
+            shutil.copy2(src, dst)
+            if not silent:
+                print(f"✅ Saved {CURRENT_LOG_FILE} to Google Drive")
+        
+        # Salin semua file batch lainnya juga
+        for file in os.listdir('.'):
+            if file.startswith(LOG_FILE_PREFIX) and file.endswith(LOG_FILE_EXT) and file != CURRENT_LOG_FILE:
+                src = file
+                dst = os.path.join(drive_mydrive_path, file)
+                shutil.copy2(src, dst)
+                if not silent:
+                    print(f"✅ Saved {file} to Google Drive")
+        
+        # Salin file nextbatch.txt jika ada
+        if os.path.exists(NEXT_BATCH_FILE):
+            src_next = NEXT_BATCH_FILE
+            dst_next = os.path.join(drive_mydrive_path, "nextbatch.txt")
+            shutil.copy2(src_next, dst_next)
+            if not silent:
+                print(f"✅ Saved nextbatch.txt to Google Drive")
+        
+        return True
                 
-    except ImportError:
-        pass
     except Exception as e:
-        print(f"⚠️ Failed to save to Google Drive: {e}")
+        if not silent:
+            print(f"⚠️ Failed to save to Google Drive: {e}")
+        return False
 
 def read_all_batches_as_dict():
     """Membaca SEMUA file batch dan mengembalikan dictionary berdasarkan batch_id"""
@@ -159,8 +185,9 @@ def write_batches_from_dict(batch_dict, file_index=None):
         
         print(f"💾 Batch data saved to: {CURRENT_LOG_FILE}")
         
-        # Simpan ke Google Drive (silent)
-        save_to_drive()
+        # Simpan ke Google Drive (dengan feedback)
+        print(f"🔄 Saving to Google Drive...")
+        save_to_drive(silent=False)
         
     except Exception as e:
         print(f"❌ Error writing batch file: {e}")
@@ -188,7 +215,8 @@ def save_next_batch_info(start_hex, range_bits, address, next_start_hex, batches
                 f.write(f"{key}={value}\n")
         
         # 2. Simpan ke Google Drive
-        save_to_drive()
+        print(f"\n🔄 Saving next batch info to Google Drive...")
+        save_to_drive(silent=False)
         
         print(f"\n📝 Next batch info saved:")
         print(f"   File: {NEXT_BATCH_FILE}")
@@ -469,6 +497,43 @@ def continue_generation_auto(batch_size, max_batches=None):
         
         # Jika user memilih continue, loop akan berlanjut
 
+def continue_generation_single(batch_size, max_batches=None):
+    """Lanjutkan generate batch dari state yang tersimpan (single run)"""
+    next_info = load_next_batch_info()
+    if not next_info:
+        print("❌ No saved state found. Run with --generate first.")
+        sys.exit(1)
+    
+    start_hex = next_info['next_start_hex']
+    range_bits = int(next_info['original_range_bits'])
+    address = next_info['address']
+    batches_generated = int(next_info['batches_generated'])
+    total_batches = int(next_info['total_batches'])
+    
+    print(f"\n{'='*60}")
+    print(f"CONTINUE GENERATION (SINGLE RUN)")
+    print(f"{'='*60}")
+    
+    remaining_batches = total_batches - batches_generated
+    batches_to_generate = min(remaining_batches, max_batches) if max_batches else remaining_batches
+    
+    if batches_to_generate <= 0:
+        print("✅ All batches already generated!")
+        sys.exit(0)
+    
+    total_batches_needed, actual_generated, batch_dict = generate_batches(
+        start_hex, range_bits, address, batch_size, 
+        start_batch_id=batches_generated, max_batches=batches_to_generate
+    )
+    
+    print(f"\n{'='*60}")
+    print(f"✅ GENERATION COMPLETED")
+    print(f"{'='*60}")
+    print(f"Generated {actual_generated} new batches")
+    print(f"Total batches generated so far: {batches_generated + actual_generated}/{total_batches}")
+    
+    display_batch_summary()
+
 def export_to_csv(output_file="batches.csv"):
     """Export batch data ke format CSV untuk analisis"""
     batch_dict = read_all_batches_as_dict()
@@ -577,12 +642,13 @@ def main():
     print(f"Output format: {BATCH_COLUMNS}")
     print(f"Auto-continue until completion")
     print(f"Multiple batch files with indexing")
+    print(f"Auto-save to Google Drive")
     print("="*60)
     
     if len(sys.argv) < 2:
         print("\nUsage:")
         print("  Generate batches: python3 genb.py --generate START_HEX RANGE_BITS [ADDRESS]")
-        print("  Continue generation (auto): python3 genb.py --continue")
+        print("  Continue generation (auto until completion): python3 genb.py --continue")
         print("  Continue (single run): python3 genb.py --continue-single")
         print("  Show summary: python3 genb.py --summary")
         print("  Export to CSV: python3 genb.py --export [filename.csv]")
@@ -637,52 +703,19 @@ def main():
     
     # Continue mode (single run)
     elif sys.argv[1] == "--continue-single":
-        # Tetapkan file batch saat ini
+        # Set current batch file
         CURRENT_LOG_FILE = get_current_batch_file()
         print(f"📁 Current batch file: {CURRENT_LOG_FILE}")
         
-        # Panggil fungsi continue seperti sebelumnya
-        next_info = load_next_batch_info()
-        if not next_info:
-            print("❌ No saved state found. Run with --generate first.")
-            sys.exit(1)
-        
-        start_hex = next_info['next_start_hex']
-        range_bits = int(next_info['original_range_bits'])
-        address = next_info['address']
-        batches_generated = int(next_info['batches_generated'])
-        total_batches = int(next_info['total_batches'])
-        
-        print(f"\n{'='*60}")
-        print(f"CONTINUE GENERATION (SINGLE RUN)")
-        print(f"{'='*60}")
-        
-        remaining_batches = total_batches - batches_generated
-        batches_to_generate = min(remaining_batches, MAX_BATCHES_PER_RUN)
-        
-        if batches_to_generate <= 0:
-            print("✅ All batches already generated!")
-            sys.exit(0)
-        
-        total_batches_needed, actual_generated, batch_dict = generate_batches(
-            start_hex, range_bits, address, BATCH_SIZE, 
-            start_batch_id=batches_generated, max_batches=batches_to_generate
-        )
-        
-        print(f"\n{'='*60}")
-        print(f"✅ GENERATION COMPLETED")
-        print(f"{'='*60}")
-        print(f"Generated {actual_generated} new batches")
-        print(f"Total batches generated so far: {batches_generated + actual_generated}/{total_batches}")
-        
-        display_batch_summary()
+        continue_generation_single(BATCH_SIZE, MAX_BATCHES_PER_RUN)
         sys.exit(0)
     
     # Continue mode (auto - until completion)
     elif sys.argv[1] == "--continue":
-        print(f"📁 Current batch file: {get_current_batch_file()}")
+        CURRENT_LOG_FILE = get_current_batch_file()
+        print(f"📁 Current batch file: {CURRENT_LOG_FILE}")
+        
         continue_generation_auto(BATCH_SIZE, MAX_BATCHES_PER_RUN)
-        display_batch_summary()
         sys.exit(0)
     
     # Generate mode
@@ -736,7 +769,8 @@ def main():
         
         if batches_generated < total_batches_needed:
             print(f"Batches remaining: {total_batches_needed - batches_generated}")
-            print(f"To continue: python3 genb.py --continue (auto) or python3 genb.py --continue-single (single run)")
+            print(f"To continue: python3 genb.py --continue (auto until completion)")
+            print(f"To continue single run: python3 genb.py --continue-single")
         
         display_batch_summary()
         
