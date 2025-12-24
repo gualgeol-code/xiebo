@@ -193,9 +193,9 @@ def read_all_batches_as_dict():
 
 def read_current_batches_as_dict():
     """Membaca file batch saat ini dan mengembalikan dictionary berdasarkan batch_id"""
+    global CURRENT_LOG_FILE
     batch_dict = {}
     
-    global CURRENT_LOG_FILE
     if CURRENT_LOG_FILE is None:
         CURRENT_LOG_FILE = get_current_batch_file()
     
@@ -251,6 +251,8 @@ def write_batches_from_dict(batch_dict, create_new_file=False):
 
 def save_next_batch_info(start_hex, range_bits, address, next_start_hex, batches_generated, total_batches, timestamp=None):
     """Menyimpan informasi batch berikutnya ke file"""
+    global CURRENT_LOG_FILE
+    
     try:
         if timestamp is None:
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -288,6 +290,8 @@ def save_next_batch_info(start_hex, range_bits, address, next_start_hex, batches
 
 def load_next_batch_info():
     """Memuat informasi batch berikutnya dari file"""
+    global CURRENT_LOG_FILE
+    
     if not os.path.exists(NEXT_BATCH_FILE):
         return None
     
@@ -302,7 +306,6 @@ def load_next_batch_info():
         
         # Set current batch file
         if 'current_batch_file' in info:
-            global CURRENT_LOG_FILE
             CURRENT_LOG_FILE = info['current_batch_file']
         
         return info
@@ -327,6 +330,7 @@ def calculate_range_bits(keys_count):
 
 def generate_batches(start_hex, range_bits, address, batch_size, start_batch_id=0, max_batches=None):
     """Generate batch dari range hex"""
+    global CURRENT_LOG_FILE
     
     start_int = int(start_hex, 16)
     total_keys = 1 << range_bits
@@ -509,6 +513,8 @@ def display_batch_summary():
 
 def continue_generation_auto(batch_size, max_batches=None):
     """Lanjutkan generate batch dari state yang tersimpan secara otomatis sampai selesai TANPA KONFIRMASI"""
+    global CURRENT_LOG_FILE
+    
     run_count = 0
     
     while True:
@@ -530,7 +536,6 @@ def continue_generation_auto(batch_size, max_batches=None):
         current_file = next_info.get('current_batch_file', CURRENT_LOG_FILE)
         
         # Set current file
-        global CURRENT_LOG_FILE
         CURRENT_LOG_FILE = current_file
         
         print(f"Resuming from saved state...")
@@ -603,6 +608,8 @@ def continue_generation_auto(batch_size, max_batches=None):
 
 def continue_generation_single(batch_size, max_batches=None):
     """Lanjutkan generate batch dari state yang tersimpan (single run)"""
+    global CURRENT_LOG_FILE
+    
     next_info = load_next_batch_info()
     if not next_info:
         print("❌ No saved state found. Run with --generate first.")
@@ -616,7 +623,6 @@ def continue_generation_single(batch_size, max_batches=None):
     current_file = next_info.get('current_batch_file', CURRENT_LOG_FILE)
     
     # Set current file
-    global CURRENT_LOG_FILE
     CURRENT_LOG_FILE = current_file
     
     print(f"\n{'='*60}")
@@ -744,7 +750,6 @@ def display_file_info():
 
 def main():
     """Main function untuk generate batch"""
-    
     global CURRENT_LOG_FILE
     
     print("\n" + "="*60)
