@@ -23,7 +23,7 @@ BATCH_COLUMNS = [
     'status'
 ]
 
-# Konfigurasi batch
+# Konfigurasi batch - sebagai variabel module-level
 MAX_BATCHES_PER_RUN = 1000000  # Maksimal 1juta batch per eksekusi
 BATCH_SIZE = 2000000000000  # 2 triliun keys per batch (default)
 DEFAULT_ADDRESS = "N/A"  # Default address untuk batch generation
@@ -290,7 +290,7 @@ def display_batch_summary():
             print(f"\n💾 NEXT BATCH INFO:")
             print(f"  Next start: 0x{next_info.get('next_start_hex')}")
             print(f"  Progress: {next_info.get('batches_generated')}/{next_info.get('total_batches')} batches")
-            print(f"  To continue: python3 generatebatch.py --continue")
+            print(f"  To continue: python3 genb.py --continue")
         
         print(f"{'='*60}")
         
@@ -354,7 +354,7 @@ def continue_generation(batch_size, max_batches=None):
     # Update state
     if batches_generated + actual_generated < total_batches:
         print(f"\n💾 State updated for next run")
-        print(f"   To continue: python3 generatebatch.py --continue")
+        print(f"   To continue: python3 genb.py --continue")
     
     display_batch_summary()
 
@@ -406,19 +406,16 @@ def main():
     
     if len(sys.argv) < 2:
         print("\nUsage:")
-        print("  Generate batches: python3 generatebatch.py --generate START_HEX RANGE_BITS [ADDRESS]")
-        print("  Continue generation: python3 generatebatch.py --continue")
-        print("  Show summary: python3 generatebatch.py --summary")
-        print("  Export to CSV: python3 generatebatch.py --export [filename.csv]")
-        print("  Set batch size: python3 generatebatch.py --set-size SIZE")
+        print("  Generate batches: python3 genb.py --generate START_HEX RANGE_BITS [ADDRESS]")
+        print("  Continue generation: python3 genb.py --continue")
+        print("  Show summary: python3 genb.py --summary")
+        print("  Export to CSV: python3 genb.py --export [filename.csv]")
+        print("  Set batch size: python3 genb.py --set-size SIZE")
         print("\nOptions:")
         print(f"  Default batch size: {BATCH_SIZE:,} keys")
         print(f"  Default address: {DEFAULT_ADDRESS}")
         print(f"  Max batches per run: {MAX_BATCHES_PER_RUN}")
         sys.exit(1)
-    
-    # Global batch size
-    global BATCH_SIZE
     
     # Show summary mode
     if sys.argv[1] == "--summary":
@@ -437,7 +434,7 @@ def main():
     # Set batch size mode
     elif sys.argv[1] == "--set-size":
         if len(sys.argv) != 3:
-            print("Usage: python3 generatebatch.py --set-size SIZE")
+            print("Usage: python3 genb.py --set-size SIZE")
             sys.exit(1)
         
         try:
@@ -446,8 +443,9 @@ def main():
                 print("❌ Batch size must be positive")
                 sys.exit(1)
             
-            BATCH_SIZE = new_size
-            print(f"✅ Batch size set to {BATCH_SIZE:,} keys")
+            # Update global BATCH_SIZE
+            globals()['BATCH_SIZE'] = new_size
+            print(f"✅ Batch size set to {new_size:,} keys")
         except ValueError:
             print("❌ Invalid batch size. Must be an integer.")
             sys.exit(1)
@@ -461,7 +459,7 @@ def main():
     # Generate mode
     elif sys.argv[1] == "--generate":
         if len(sys.argv) < 4:
-            print("Usage: python3 generatebatch.py --generate START_HEX RANGE_BITS [ADDRESS]")
+            print("Usage: python3 genb.py --generate START_HEX RANGE_BITS [ADDRESS]")
             sys.exit(1)
         
         start_hex = sys.argv[2]
@@ -499,15 +497,15 @@ def main():
         
         if batches_generated < total_batches_needed:
             print(f"Batches remaining: {total_batches_needed - batches_generated}")
-            print(f"To continue: python3 generatebatch.py --continue")
+            print(f"To continue: python3 genb.py --continue")
         
         display_batch_summary()
         
     else:
         print("❌ Invalid command")
-        print("Usage: python3 generatebatch.py --generate START_HEX RANGE_BITS [ADDRESS]")
-        print("Or:    python3 generatebatch.py --continue")
-        print("Or:    python3 generatebatch.py --summary")
+        print("Usage: python3 genb.py --generate START_HEX RANGE_BITS [ADDRESS]")
+        print("Or:    python3 genb.py --continue")
+        print("Or:    python3 genb.py --summary")
         sys.exit(1)
 
 if __name__ == "__main__":
