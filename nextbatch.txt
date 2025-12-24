@@ -1,0 +1,9 @@
+original_start=50e9deaaf401e00000
+original_range_bits=70
+address=1PWo3JeB9jrGwfHDNpdGK54CRas7fsVzXU
+next_start_hex=5190673b5fda900000
+batches_generated=54000000
+total_batches=196765271
+timestamp=2025-12-24 07:22:07
+current_batch_file=generated_batches_027.txt
+current_batch_index=27
