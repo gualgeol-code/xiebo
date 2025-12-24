@@ -33,7 +33,7 @@ def get_next_batch_filename():
     while True:
         filename = f"{LOG_FILE_PREFIX}_{index:03d}{LOG_FILE_EXT}"
         if not os.path.exists(filename):
-            return filename
+            return filename, index
         index += 1
 
 def get_current_batch_file():
@@ -47,11 +47,66 @@ def get_current_batch_file():
     
     if not batch_files:
         # Jika tidak ada file batch, buat yang pertama
-        return get_next_batch_filename()
+        filename, index = get_next_batch_filename()
+        return filename
     
     # Urutkan berdasarkan index (generated_batches_001.txt, generated_batches_002.txt, dst)
     batch_files.sort()
     return batch_files[-1]  # File dengan index tertinggi
+
+def get_current_batch_index():
+    """Mendapatkan index file batch saat ini"""
+    batch_files = []
+    
+    # Cari semua file batch
+    for file in os.listdir('.'):
+        if file.startswith(LOG_FILE_PREFIX) and file.endswith(LOG_FILE_EXT):
+            batch_files.append(file)
+    
+    if not batch_files:
+        return 1
+    
+    # Urutkan berdasarkan index
+    batch_files.sort()
+    
+    # Ambil file terakhir
+    last_file = batch_files[-1]
+    
+    # Ekstrak index dari nama file
+    try:
+        # Format: generated_batches_001.txt
+        base_name = os.path.splitext(last_file)[0]  # generated_batches_001
+        index_str = base_name.split('_')[-1]        # 001
+        return int(index_str)
+    except (ValueError, IndexError):
+        return 1
+
+def should_create_new_batch_file(current_file, new_batch_count):
+    """Menentukan apakah perlu membuat file batch baru"""
+    if not os.path.exists(current_file):
+        return True
+    
+    try:
+        # Cek ukuran file saat ini
+        file_size = os.path.getsize(current_file)
+        
+        # Jika file sudah besar (> 10MB) atau banyak batch (> 1000), buat file baru
+        if file_size > 10 * 1024 * 1024:  # 10MB
+            return True
+        
+        # Hitung jumlah batch dalam file saat ini
+        batch_count = 0
+        with open(current_file, 'r') as f:
+            reader = csv.DictReader(f, delimiter='|')
+            batch_count = sum(1 for _ in reader)
+        
+        if batch_count + new_batch_count > 10000:  # Jika akan melebihi 10,000 batch
+            return True
+            
+    except Exception:
+        pass
+    
+    return False
 
 def save_to_drive(silent=False):
     """Menyimpan file ke Google Drive"""
@@ -76,22 +131,17 @@ def save_to_drive(silent=False):
                 print("🔄 Mounting Google Drive...")
             drive.mount(DRIVE_MOUNT_PATH, force_remount=False)
         
-        # Salin file batch yang sedang aktif
-        if CURRENT_LOG_FILE and os.path.exists(CURRENT_LOG_FILE):
-            src = CURRENT_LOG_FILE
-            dst = os.path.join(drive_mydrive_path, CURRENT_LOG_FILE)
-            shutil.copy2(src, dst)
-            if not silent:
-                print(f"✅ Saved {CURRENT_LOG_FILE} to Google Drive")
+        uploaded_files = []
         
-        # Salin semua file batch lainnya juga
+        # Salin semua file batch
         for file in os.listdir('.'):
-            if file.startswith(LOG_FILE_PREFIX) and file.endswith(LOG_FILE_EXT) and file != CURRENT_LOG_FILE:
+            if file.startswith(LOG_FILE_PREFIX) and file.endswith(LOG_FILE_EXT):
                 src = file
                 dst = os.path.join(drive_mydrive_path, file)
                 shutil.copy2(src, dst)
+                uploaded_files.append(file)
                 if not silent:
-                    print(f"✅ Saved {file} to Google Drive")
+                    print(f"  ✅ Saved {file} to Google Drive")
         
         # Salin file nextbatch.txt jika ada
         if os.path.exists(NEXT_BATCH_FILE):
@@ -99,7 +149,10 @@ def save_to_drive(silent=False):
             dst_next = os.path.join(drive_mydrive_path, "nextbatch.txt")
             shutil.copy2(src_next, dst_next)
             if not silent:
-                print(f"✅ Saved nextbatch.txt to Google Drive")
+                print(f"  ✅ Saved nextbatch.txt to Google Drive")
+        
+        if not silent and uploaded_files:
+            print(f"📤 Uploaded {len(uploaded_files)} batch files to Google Drive")
         
         return True
                 
@@ -121,7 +174,7 @@ def read_all_batches_as_dict():
     if not batch_files:
         return batch_dict
     
-    # Urutkan file batch
+    # Urutkan file batch berdasarkan index
     batch_files.sort()
     
     # Baca semua file batch
@@ -161,16 +214,19 @@ def read_current_batches_as_dict():
     
     return batch_dict
 
-def write_batches_from_dict(batch_dict, file_index=None):
+def write_batches_from_dict(batch_dict, create_new_file=False):
     """Menulis batch file dari dictionary"""
     global CURRENT_LOG_FILE
     
     try:
         # Tentukan file batch yang akan digunakan
-        if file_index is None:
+        if create_new_file or CURRENT_LOG_FILE is None:
+            # Cari file batch berikutnya
+            filename, index = get_next_batch_filename()
+            CURRENT_LOG_FILE = filename
+            print(f"📁 Creating new batch file: {CURRENT_LOG_FILE}")
+        elif CURRENT_LOG_FILE is None:
             CURRENT_LOG_FILE = get_current_batch_file()
-        else:
-            CURRENT_LOG_FILE = f"{LOG_FILE_PREFIX}_{file_index:03d}{LOG_FILE_EXT}"
         
         # Konversi dictionary ke list dan urutkan
         rows = []
@@ -184,6 +240,7 @@ def write_batches_from_dict(batch_dict, file_index=None):
             writer.writerows(rows)
         
         print(f"💾 Batch data saved to: {CURRENT_LOG_FILE}")
+        print(f"📊 Total batches in file: {len(rows)}")
         
         # Simpan ke Google Drive (dengan feedback)
         print(f"🔄 Saving to Google Drive...")
@@ -206,7 +263,8 @@ def save_next_batch_info(start_hex, range_bits, address, next_start_hex, batches
             'batches_generated': str(batches_generated),
             'total_batches': str(total_batches),
             'timestamp': timestamp,
-            'current_batch_file': CURRENT_LOG_FILE if CURRENT_LOG_FILE else get_current_batch_file()
+            'current_batch_file': CURRENT_LOG_FILE if CURRENT_LOG_FILE else get_current_batch_file(),
+            'current_batch_index': str(get_current_batch_index())
         }
         
         # 1. Simpan ke file nextbatch.txt
@@ -223,6 +281,7 @@ def save_next_batch_info(start_hex, range_bits, address, next_start_hex, batches
         print(f"   Next start: 0x{next_start_hex}")
         print(f"   Progress: {batches_generated}/{total_batches} batches generated")
         print(f"   Current batch file: {info['current_batch_file']}")
+        print(f"   Current batch index: {info['current_batch_index']}")
         
     except Exception as e:
         print(f"❌ Error saving next batch info: {e}")
@@ -297,9 +356,25 @@ def generate_batches(start_hex, range_bits, address, batch_size, start_batch_id=
     print(f"Output file: {CURRENT_LOG_FILE if CURRENT_LOG_FILE else 'Auto-determined'}")
     print(f"{'='*60}")
     
-    # Baca batch yang sudah ada (jika melanjutkan)
-    if start_batch_id > 0:
-        batch_dict = read_all_batches_as_dict()
+    # Tentukan apakah perlu membuat file baru
+    create_new_file = False
+    if start_batch_id == 0:
+        # Jika mulai dari awal, buat file baru
+        create_new_file = True
+    elif CURRENT_LOG_FILE and os.path.exists(CURRENT_LOG_FILE):
+        # Cek apakah file saat ini sudah besar
+        create_new_file = should_create_new_batch_file(CURRENT_LOG_FILE, batches_to_generate)
+    
+    if create_new_file:
+        print(f"🆕 Creating new batch file for this run...")
+    
+    # Baca batch yang sudah ada (jika melanjutkan dan tidak membuat file baru)
+    if start_batch_id > 0 and not create_new_file:
+        batch_dict = read_current_batches_as_dict()
+        # Juga baca dari file sebelumnya jika ada
+        existing_batches = read_all_batches_as_dict()
+        # Gabungkan, prioritaskan yang baru
+        batch_dict.update(existing_batches)
     else:
         batch_dict = {}
     
@@ -308,9 +383,6 @@ def generate_batches(start_hex, range_bits, address, batch_size, start_batch_id=
         batch_start = start_int + (i * batch_size)
         batch_end = min(batch_start + batch_size, end_int + 1)
         batch_keys = batch_end - batch_start
-        
-        # Hitung bits untuk batch ini (untuk display saja, tidak disimpan)
-        batch_bits = calculate_range_bits(batch_keys)
         
         batch_start_hex = format(batch_start, 'x')
         batch_end_hex = format(batch_end - 1, 'x')  # -1 karena end inklusif
@@ -329,7 +401,7 @@ def generate_batches(start_hex, range_bits, address, batch_size, start_batch_id=
             print(f"✅ Generated batch {i+1}/{batches_to_generate}: ID={batch_id}, Start=0x{batch_start_hex}, End=0x{batch_end_hex}, Keys={batch_keys:,}")
     
     # Tulis batch ke file
-    write_batches_from_dict(batch_dict)
+    write_batches_from_dict(batch_dict, create_new_file)
     
     # Simpan info batch berikutnya jika belum selesai semua
     if batches_to_generate < total_batches_needed:
@@ -375,13 +447,30 @@ def display_batch_summary():
         print(f"Total batches generated: {total_batches}")
         print(f"Total batch files: {len(batch_files)}")
         
-        # Tampilkan daftar file batch
+        # Tampilkan daftar file batch dengan detail
         if batch_files:
             batch_files.sort()
             print(f"\n📁 Batch files:")
+            total_file_size = 0
+            total_file_batches = 0
+            
             for file in batch_files:
                 file_size = os.path.getsize(file)
-                print(f"  {file} ({file_size:,} bytes)")
+                total_file_size += file_size
+                
+                # Hitung batch dalam file
+                file_batches = 0
+                try:
+                    with open(file, 'r') as f:
+                        reader = csv.DictReader(f, delimiter='|')
+                        file_batches = sum(1 for _ in reader)
+                    total_file_batches += file_batches
+                except:
+                    pass
+                
+                print(f"  {file}: {file_batches} batches, {file_size:,} bytes")
+            
+            print(f"\n📊 File totals: {total_file_batches} batches, {total_file_size:,} bytes ({total_file_size/1024/1024:.2f} MB)")
         
         # Tampilkan format file
         print(f"\n📋 File format: {BATCH_COLUMNS}")
@@ -408,6 +497,7 @@ def display_batch_summary():
             print(f"  Next start: 0x{next_info.get('next_start_hex')}")
             print(f"  Progress: {next_info.get('batches_generated')}/{next_info.get('total_batches')} batches")
             print(f"  Current batch file: {next_info.get('current_batch_file', 'Unknown')}")
+            print(f"  Current batch index: {next_info.get('current_batch_index', 'Unknown')}")
             print(f"  To continue: python3 genb.py --continue")
         else:
             print(f"\n✅ All batches completed!")
@@ -418,15 +508,18 @@ def display_batch_summary():
         print(f"❌ Error displaying summary: {e}")
 
 def continue_generation_auto(batch_size, max_batches=None):
-    """Lanjutkan generate batch dari state yang tersimpan secara otomatis sampai selesai"""
+    """Lanjutkan generate batch dari state yang tersimpan secara otomatis sampai selesai TANPA KONFIRMASI"""
+    run_count = 0
+    
     while True:
         next_info = load_next_batch_info()
         if not next_info:
             print("✅ All batches have been generated!")
             break
         
+        run_count += 1
         print(f"\n{'='*60}")
-        print(f"CONTINUE GENERATION (AUTO)")
+        print(f"CONTINUE GENERATION (AUTO) - RUN #{run_count}")
         print(f"{'='*60}")
         
         start_hex = next_info['next_start_hex']
@@ -434,14 +527,19 @@ def continue_generation_auto(batch_size, max_batches=None):
         address = next_info['address']
         batches_generated = int(next_info['batches_generated'])
         total_batches = int(next_info['total_batches'])
+        current_file = next_info.get('current_batch_file', CURRENT_LOG_FILE)
+        
+        # Set current file
+        global CURRENT_LOG_FILE
+        CURRENT_LOG_FILE = current_file
         
         print(f"Resuming from saved state...")
         print(f"Next start: 0x{start_hex}")
         print(f"Range: {range_bits} bits")
         print(f"Address: {address}")
-        print(f"Batches already generated: {batches_generated}")
-        print(f"Total batches needed: {total_batches}")
-        print(f"Current batch file: {next_info.get('current_batch_file', CURRENT_LOG_FILE)}")
+        print(f"Batches already generated: {batches_generated:,}")
+        print(f"Total batches needed: {total_batches:,}")
+        print(f"Current batch file: {current_file}")
         print(f"Timestamp: {next_info.get('timestamp', 'unknown')}")
         print(f"Output format: {BATCH_COLUMNS}")
         print(f"{'='*60}")
@@ -459,8 +557,8 @@ def continue_generation_auto(batch_size, max_batches=None):
         else:
             batches_to_generate = remaining_batches
         
-        print(f"\nGenerating {batches_to_generate} more batches")
-        print(f"{remaining_batches} batches remaining in total")
+        print(f"\nGenerating {batches_to_generate:,} more batches")
+        print(f"{remaining_batches:,} batches remaining in total")
         
         # Generate batch
         total_batches_needed, actual_generated, batch_dict = generate_batches(
@@ -469,33 +567,39 @@ def continue_generation_auto(batch_size, max_batches=None):
         )
         
         print(f"\n{'='*60}")
-        print(f"✅ GENERATION COMPLETED FOR THIS RUN")
+        print(f"✅ GENERATION COMPLETED FOR RUN #{run_count}")
         print(f"{'='*60}")
-        print(f"Generated {actual_generated} new batches")
-        print(f"Total batches generated so far: {batches_generated + actual_generated}/{total_batches}")
+        print(f"Generated {actual_generated:,} new batches")
+        print(f"Total batches generated so far: {batches_generated + actual_generated:,}/{total_batches:,}")
+        print(f"Progress: {((batches_generated + actual_generated) / total_batches * 100):.2f}%")
         
         # Cek apakah masih ada batch yang tersisa
         next_info_after = load_next_batch_info()
         if not next_info_after:
-            print(f"\n🎉 ALL BATCHES COMPLETED!")
+            print(f"\n{'='*60}")
+            print(f"🎉 ALL BATCHES COMPLETED!")
+            print(f"{'='*60}")
+            print(f"Total runs: {run_count}")
+            print(f"Total batches: {batches_generated + actual_generated:,}")
             break
         
         if batches_generated + actual_generated >= total_batches:
-            print(f"\n🎉 ALL BATCHES COMPLETED!")
+            print(f"\n{'='*60}")
+            print(f"🎉 ALL BATCHES COMPLETED!")
+            print(f"{'='*60}")
+            print(f"Total runs: {run_count}")
+            print(f"Total batches: {batches_generated + actual_generated:,}")
             break
         
-        # Tanya user apakah ingin melanjutkan atau berhenti
+        # LANGSUNG LANJUT TANPA KONFIRMASI
         print(f"\n{'='*60}")
-        print(f"Batch generation paused.")
-        print(f"Progress: {batches_generated + actual_generated}/{total_batches} batches")
+        print(f"⏭️  Auto-continuing to next run...")
+        print(f"Progress: {batches_generated + actual_generated:,}/{total_batches:,} batches ({((batches_generated + actual_generated) / total_batches * 100):.2f}%)")
+        print(f"Current batch file: {CURRENT_LOG_FILE}")
         print(f"{'='*60}")
         
-        user_input = input("\nContinue generating? (y/n): ").strip().lower()
-        if user_input != 'y':
-            print("Batch generation stopped by user.")
-            break
-        
-        # Jika user memilih continue, loop akan berlanjut
+        # Lanjut ke iterasi berikutnya tanpa konfirmasi
+        continue
 
 def continue_generation_single(batch_size, max_batches=None):
     """Lanjutkan generate batch dari state yang tersimpan (single run)"""
@@ -509,10 +613,16 @@ def continue_generation_single(batch_size, max_batches=None):
     address = next_info['address']
     batches_generated = int(next_info['batches_generated'])
     total_batches = int(next_info['total_batches'])
+    current_file = next_info.get('current_batch_file', CURRENT_LOG_FILE)
+    
+    # Set current file
+    global CURRENT_LOG_FILE
+    CURRENT_LOG_FILE = current_file
     
     print(f"\n{'='*60}")
     print(f"CONTINUE GENERATION (SINGLE RUN)")
     print(f"{'='*60}")
+    print(f"Current batch file: {CURRENT_LOG_FILE}")
     
     remaining_batches = total_batches - batches_generated
     batches_to_generate = min(remaining_batches, max_batches) if max_batches else remaining_batches
@@ -531,6 +641,7 @@ def continue_generation_single(batch_size, max_batches=None):
     print(f"{'='*60}")
     print(f"Generated {actual_generated} new batches")
     print(f"Total batches generated so far: {batches_generated + actual_generated}/{total_batches}")
+    print(f"Current batch file: {CURRENT_LOG_FILE}")
     
     display_batch_summary()
 
@@ -629,6 +740,7 @@ def display_file_info():
         print(f"   Next start: 0x{next_info.get('next_start_hex')}")
         print(f"   Progress: {next_info.get('batches_generated')}/{next_info.get('total_batches')} batches")
         print(f"   Current file: {next_info.get('current_batch_file', 'Unknown')}")
+        print(f"   File index: {next_info.get('current_batch_index', 'Unknown')}")
 
 def main():
     """Main function untuk generate batch"""
@@ -640,15 +752,15 @@ def main():
     print("="*60)
     print("Tool untuk generate batch dari range hex")
     print(f"Output format: {BATCH_COLUMNS}")
-    print(f"Auto-continue until completion")
-    print(f"Multiple batch files with indexing")
+    print(f"Auto-continue until completion (no confirmation)")
+    print(f"Multiple batch files with auto-incrementing index")
     print(f"Auto-save to Google Drive")
     print("="*60)
     
     if len(sys.argv) < 2:
         print("\nUsage:")
         print("  Generate batches: python3 genb.py --generate START_HEX RANGE_BITS [ADDRESS]")
-        print("  Continue generation (auto until completion): python3 genb.py --continue")
+        print("  Continue generation (auto until completion, NO CONFIRMATION): python3 genb.py --continue")
         print("  Continue (single run): python3 genb.py --continue-single")
         print("  Show summary: python3 genb.py --summary")
         print("  Export to CSV: python3 genb.py --export [filename.csv]")
@@ -657,9 +769,11 @@ def main():
         print("\nOptions:")
         print(f"  Default batch size: {BATCH_SIZE:,} keys")
         print(f"  Default address: {DEFAULT_ADDRESS}")
-        print(f"  Max batches per run: {MAX_BATCHES_PER_RUN}")
+        print(f"  Max batches per run: {MAX_BATCHES_PER_RUN:,}")
         print(f"  Output columns: {BATCH_COLUMNS}")
         print(f"  Batch files: {LOG_FILE_PREFIX}_001.txt, {LOG_FILE_PREFIX}_002.txt, ...")
+        print(f"  Auto-create new file when: file > 10MB or > 10,000 batches")
+        print(f"  --continue: Will run continuously WITHOUT asking for confirmation")
         sys.exit(1)
     
     # Show file info mode
@@ -710,10 +824,12 @@ def main():
         continue_generation_single(BATCH_SIZE, MAX_BATCHES_PER_RUN)
         sys.exit(0)
     
-    # Continue mode (auto - until completion)
+    # Continue mode (auto - until completion, NO CONFIRMATION)
     elif sys.argv[1] == "--continue":
         CURRENT_LOG_FILE = get_current_batch_file()
-        print(f"📁 Current batch file: {CURRENT_LOG_FILE}")
+        print(f"📁 Starting with batch file: {CURRENT_LOG_FILE}")
+        print(f"⚠️  WARNING: Auto-continue mode activated. Process will run until completion WITHOUT confirmation.")
+        print(f"   Press Ctrl+C to stop at any time.\n")
         
         continue_generation_auto(BATCH_SIZE, MAX_BATCHES_PER_RUN)
         sys.exit(0)
@@ -746,9 +862,8 @@ def main():
             print("❌ Range bits must be between 1 and 256")
             sys.exit(1)
         
-        # Set current batch file
-        CURRENT_LOG_FILE = get_current_batch_file()
-        print(f"📁 Batch file: {CURRENT_LOG_FILE}")
+        # Set current batch file (akan dibuat baru)
+        CURRENT_LOG_FILE = None
         
         # Generate batches
         total_batches_needed, batches_generated, _ = generate_batches(
@@ -763,13 +878,13 @@ def main():
         print(f"File: {CURRENT_LOG_FILE} (format: {BATCH_COLUMNS})")
         
         # Tampilkan ukuran file
-        if os.path.exists(CURRENT_LOG_FILE):
+        if CURRENT_LOG_FILE and os.path.exists(CURRENT_LOG_FILE):
             file_size = os.path.getsize(CURRENT_LOG_FILE)
             print(f"File size: {file_size:,} bytes")
         
         if batches_generated < total_batches_needed:
             print(f"Batches remaining: {total_batches_needed - batches_generated}")
-            print(f"To continue: python3 genb.py --continue (auto until completion)")
+            print(f"To continue (auto, no confirmation): python3 genb.py --continue")
             print(f"To continue single run: python3 genb.py --continue-single")
         
         display_batch_summary()
@@ -777,7 +892,7 @@ def main():
     else:
         print("❌ Invalid command")
         print("Usage: python3 genb.py --generate START_HEX RANGE_BITS [ADDRESS]")
-        print("Or:    python3 genb.py --continue (auto until completion)")
+        print("Or:    python3 genb.py --continue (auto until completion, NO CONFIRMATION)")
         print("Or:    python3 genb.py --continue-single (single run)")
         print("Or:    python3 genb.py --summary")
         print("Or:    python3 genb.py --info")
