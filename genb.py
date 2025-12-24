@@ -19,8 +19,8 @@ BATCH_COLUMNS = [
 ]
 
 # Konfigurasi batch - sebagai variabel module-level
-MAX_BATCHES_PER_RUN = 1000000  # Maksimal 1juta batch per eksekusi
-BATCH_SIZE = 2000000000000  # 2 triliun keys per batch (default)
+MAX_BATCHES_PER_RUN = 10000000  # Maksimal 1juta batch per eksekusi
+BATCH_SIZE = 4000000000000  # 2 triliun keys per batch (default)
 DEFAULT_ADDRESS = "N/A"  # Default address untuk batch generation
 
 def save_to_drive():
