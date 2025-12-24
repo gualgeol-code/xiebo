@@ -4,10 +4,6 @@ import math
 from datetime import datetime
 import csv
 import shutil
-import threading
-import queue
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Konfigurasi file log
 LOG_FILE_PREFIX = "generated_batches"  # Prefix untuk file batch
@@ -27,15 +23,9 @@ BATCH_COLUMNS = [
 MAX_BATCHES_PER_RUN = 2000000          # Maksimal 1juta batch per eksekusi
 BATCH_SIZE = 6000000000000            # 6 triliun keys per batch (default)
 DEFAULT_ADDRESS = "N/A"                # Default address untuk batch generation
-MAX_THREADS = 24                       # Jumlah thread maksimal untuk parallel processing
 
 # Variabel global untuk tracking file batch
 CURRENT_LOG_FILE = None                # File batch yang sedang aktif
-LAST_UPLOADED_FILE = None              # File terakhir yang sudah diupload
-
-# Lock untuk thread safety
-file_lock = threading.Lock()
-progress_lock = threading.Lock()
 
 def get_next_batch_filename():
     """Mendapatkan nama file batch berikutnya dengan penomoran"""
@@ -91,22 +81,6 @@ def get_current_batch_index():
     except (ValueError, IndexError):
         return 1
 
-def get_latest_batch_file():
-    """Mendapatkan file batch terbaru (dengan index tertinggi)"""
-    batch_files = []
-    
-    # Cari semua file batch
-    for file in os.listdir('.'):
-        if file.startswith(LOG_FILE_PREFIX) and file.endswith(LOG_FILE_EXT):
-            batch_files.append(file)
-    
-    if not batch_files:
-        return None
-    
-    # Urutkan berdasarkan index
-    batch_files.sort()
-    return batch_files[-1]  # File dengan index tertinggi
-
 def should_create_new_batch_file(current_file, new_batch_count):
     """Menentukan apakah perlu membuat file batch baru"""
     if not os.path.exists(current_file):
@@ -135,9 +109,7 @@ def should_create_new_batch_file(current_file, new_batch_count):
     return False
 
 def save_to_drive(silent=False):
-    """Menyimpan file ke Google Drive - HANYA file terakhir dan nextbatch.txt"""
-    global LAST_UPLOADED_FILE
-    
+    """Menyimpan file ke Google Drive"""
     try:
         # Cek apakah Google Drive tersedia (untuk Google Colab)
         if not os.path.exists(DRIVE_MOUNT_PATH):
@@ -161,66 +133,26 @@ def save_to_drive(silent=False):
         
         uploaded_files = []
         
-        # 1. Upload file batch terakhir saja
-        latest_batch_file = get_latest_batch_file()
-        if latest_batch_file:
-            src = latest_batch_file
-            dst = os.path.join(drive_mydrive_path, latest_batch_file)
-            
-            # Cek apakah file sudah diupload sebelumnya dan tidak berubah
-            if LAST_UPLOADED_FILE == latest_batch_file and os.path.exists(dst):
-                # Cek apakah file berubah
-                src_mtime = os.path.getmtime(src) if os.path.exists(src) else 0
-                dst_mtime = os.path.getmtime(dst) if os.path.exists(dst) else 0
-                
-                if src_mtime <= dst_mtime:
-                    # File tidak berubah, skip upload
-                    if not silent:
-                        print(f"  ⏭️  Skipping {latest_batch_file} (already uploaded and unchanged)")
-                else:
-                    # File berubah, upload ulang
-                    shutil.copy2(src, dst)
-                    LAST_UPLOADED_FILE = latest_batch_file
-                    uploaded_files.append(latest_batch_file)
-                    if not silent:
-                        print(f"  🔄 Updated {latest_batch_file} to Google Drive")
-            else:
-                # File baru atau belum diupload
+        # Salin semua file batch
+        for file in os.listdir('.'):
+            if file.startswith(LOG_FILE_PREFIX) and file.endswith(LOG_FILE_EXT):
+                src = file
+                dst = os.path.join(drive_mydrive_path, file)
                 shutil.copy2(src, dst)
-                LAST_UPLOADED_FILE = latest_batch_file
-                uploaded_files.append(latest_batch_file)
+                uploaded_files.append(file)
                 if not silent:
-                    print(f"  ✅ Saved {latest_batch_file} to Google Drive")
+                    print(f"  ✅ Saved {file} to Google Drive")
         
-        # 2. Upload file nextbatch.txt jika ada
+        # Salin file nextbatch.txt jika ada
         if os.path.exists(NEXT_BATCH_FILE):
             src_next = NEXT_BATCH_FILE
             dst_next = os.path.join(drive_mydrive_path, "nextbatch.txt")
-            
-            # Cek apakah file nextbatch.txt berubah
-            if os.path.exists(dst_next):
-                src_mtime = os.path.getmtime(src_next) if os.path.exists(src_next) else 0
-                dst_mtime = os.path.getmtime(dst_next) if os.path.exists(dst_next) else 0
-                
-                if src_mtime <= dst_mtime:
-                    # File tidak berubah, skip
-                    if not silent:
-                        print(f"  ⏭️  Skipping nextbatch.txt (already uploaded and unchanged)")
-                else:
-                    # File berubah, upload ulang
-                    shutil.copy2(src_next, dst_next)
-                    uploaded_files.append("nextbatch.txt")
-                    if not silent:
-                        print(f"  🔄 Updated nextbatch.txt to Google Drive")
-            else:
-                # File baru
-                shutil.copy2(src_next, dst_next)
-                uploaded_files.append("nextbatch.txt")
-                if not silent:
-                    print(f"  ✅ Saved nextbatch.txt to Google Drive")
+            shutil.copy2(src_next, dst_next)
+            if not silent:
+                print(f"  ✅ Saved nextbatch.txt to Google Drive")
         
         if not silent and uploaded_files:
-            print(f"📤 Uploaded {len(uploaded_files)} file(s) to Google Drive")
+            print(f"📤 Uploaded {len(uploaded_files)} batch files to Google Drive")
         
         return True
                 
@@ -310,7 +242,7 @@ def write_batches_from_dict(batch_dict, create_new_file=False):
         print(f"💾 Batch data saved to: {CURRENT_LOG_FILE}")
         print(f"📊 Total batches in file: {len(rows)}")
         
-        # Simpan ke Google Drive (dengan feedback) - HANYA upload file ini
+        # Simpan ke Google Drive (dengan feedback)
         print(f"🔄 Saving to Google Drive...")
         save_to_drive(silent=False)
         
@@ -342,7 +274,7 @@ def save_next_batch_info(start_hex, range_bits, address, next_start_hex, batches
             for key, value in info.items():
                 f.write(f"{key}={value}\n")
         
-        # 2. Simpan ke Google Drive - HANYA upload file nextbatch.txt
+        # 2. Simpan ke Google Drive
         print(f"\n🔄 Saving next batch info to Google Drive...")
         save_to_drive(silent=False)
         
@@ -396,28 +328,8 @@ def calculate_range_bits(keys_count):
     else:
         return int(math.floor(log2_val)) + 1
 
-def generate_batch_worker(args):
-    """Worker function untuk generate batch dalam thread"""
-    start_int, batch_size, end_int, start_batch_id, i = args
-    batch_id = start_batch_id + i
-    batch_start = start_int + (i * batch_size)
-    batch_end = min(batch_start + batch_size, end_int + 1)
-    batch_keys = batch_end - batch_start
-    
-    batch_start_hex = format(batch_start, 'x')
-    batch_end_hex = format(batch_end - 1, 'x')  # -1 karena end inklusif
-    
-    # Buat informasi batch (hanya 2 kolom)
-    batch_info = {
-        'batch_id': str(batch_id),
-        'start_hex': batch_start_hex,
-        'end_hex': batch_end_hex
-    }
-    
-    return batch_id, batch_info, batch_keys, i
-
-def generate_batches_multithreaded(start_hex, range_bits, address, batch_size, start_batch_id=0, max_batches=None):
-    """Generate batch dari range hex menggunakan multithreading"""
+def generate_batches(start_hex, range_bits, address, batch_size, start_batch_id=0, max_batches=None):
+    """Generate batch dari range hex"""
     global CURRENT_LOG_FILE
     
     start_int = int(start_hex, 16)
@@ -433,7 +345,7 @@ def generate_batches_multithreaded(start_hex, range_bits, address, batch_size, s
         batches_to_generate = total_batches_needed
     
     print(f"\n{'='*60}")
-    print(f"GENERATING BATCHES - MULTITHREADED ({MAX_THREADS} threads)")
+    print(f"GENERATING BATCHES")
     print(f"{'='*60}")
     print(f"Start: 0x{start_hex}")
     print(f"Range: {range_bits} bits")
@@ -446,7 +358,6 @@ def generate_batches_multithreaded(start_hex, range_bits, address, batch_size, s
     print(f"Starting batch ID: {start_batch_id}")
     print(f"Output format: {BATCH_COLUMNS}")
     print(f"Output file: {CURRENT_LOG_FILE if CURRENT_LOG_FILE else 'Auto-determined'}")
-    print(f"Threads: {MAX_THREADS}")
     print(f"{'='*60}")
     
     # Tentukan apakah perlu membuat file baru
@@ -471,74 +382,27 @@ def generate_batches_multithreaded(start_hex, range_bits, address, batch_size, s
     else:
         batch_dict = {}
     
-    # Progress tracking
-    progress_queue = queue.Queue()
-    completed_count = 0
-    start_time = time.time()
-    
-    def progress_monitor(total):
-        """Monitor progress dari queue"""
-        nonlocal completed_count
-        while completed_count < total:
-            try:
-                batch_id, batch_idx, batch_keys = progress_queue.get(timeout=1)
-                completed_count += 1
-                
-                # Update progress setiap 10 batch atau batch terakhir
-                if completed_count % 10 == 0 or completed_count == total:
-                    elapsed = time.time() - start_time
-                    batches_per_sec = completed_count / elapsed if elapsed > 0 else 0
-                    remaining = total - completed_count
-                    eta = remaining / batches_per_sec if batches_per_sec > 0 else 0
-                    
-                    with progress_lock:
-                        print(f"✅ Generated batch {completed_count}/{total}: ID={batch_id}, "
-                              f"Progress={completed_count/total*100:.1f}%, "
-                              f"Speed={batches_per_sec:.1f} batches/sec, "
-                              f"ETA={eta:.1f}s")
-            except queue.Empty:
-                continue
-    
-    # Mulai progress monitor thread
-    monitor_thread = threading.Thread(target=progress_monitor, args=(batches_to_generate,))
-    monitor_thread.daemon = True
-    monitor_thread.start()
-    
-    # Gunakan ThreadPoolExecutor untuk parallel processing
-    with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-        # Prepare arguments untuk semua batch
-        batch_args = [(start_int, batch_size, end_int, start_batch_id, i) 
-                     for i in range(batches_to_generate)]
+    for i in range(batches_to_generate):
+        batch_id = start_batch_id + i
+        batch_start = start_int + (i * batch_size)
+        batch_end = min(batch_start + batch_size, end_int + 1)
+        batch_keys = batch_end - batch_start
         
-        # Submit semua tasks
-        futures = [executor.submit(generate_batch_worker, arg) for arg in batch_args]
+        batch_start_hex = format(batch_start, 'x')
+        batch_end_hex = format(batch_end - 1, 'x')  # -1 karena end inklusif
         
-        # Process hasil
-        for future in as_completed(futures):
-            try:
-                batch_id, batch_info, batch_keys, batch_idx = future.result()
-                
-                # Simpan hasil ke dictionary dengan lock untuk thread safety
-                with file_lock:
-                    batch_dict[str(batch_id)] = batch_info
-                
-                # Kirim progress update ke queue
-                progress_queue.put((batch_id, batch_idx, batch_keys))
-                
-            except Exception as e:
-                print(f"❌ Error generating batch: {e}")
-    
-    # Tunggu progress monitor selesai
-    monitor_thread.join(timeout=5)
-    
-    # Hitung statistik akhir
-    elapsed_time = time.time() - start_time
-    batches_per_second = batches_to_generate / elapsed_time if elapsed_time > 0 else 0
-    
-    print(f"\n⏱️  Generation statistics:")
-    print(f"   Total time: {elapsed_time:.2f} seconds")
-    print(f"   Batches per second: {batches_per_second:.2f}")
-    print(f"   Threads used: {MAX_THREADS}")
+        # Buat informasi batch (hanya 2 kolom)
+        batch_info = {
+            'batch_id': str(batch_id),
+            'start_hex': batch_start_hex,
+            'end_hex': batch_end_hex
+        }
+        
+        batch_dict[str(batch_id)] = batch_info
+        
+        # Tampilkan progress setiap 10 batch atau batch terakhir
+        if (i + 1) % 10 == 0 or i == batches_to_generate - 1:
+            print(f"✅ Generated batch {i+1}/{batches_to_generate}: ID={batch_id}, Start=0x{batch_start_hex}, End=0x{batch_end_hex}, Keys={batch_keys:,}")
     
     # Tulis batch ke file
     write_batches_from_dict(batch_dict, create_new_file)
@@ -561,101 +425,6 @@ def generate_batches_multithreaded(start_hex, range_bits, address, batch_size, s
         if os.path.exists(NEXT_BATCH_FILE):
             os.remove(NEXT_BATCH_FILE)
             print(f"\n🗑️  All batches completed. Removed {NEXT_BATCH_FILE}")
-        
-        # Upload final file ke Google Drive
-        print(f"\n🔄 Uploading final batch file to Google Drive...")
-        save_to_drive(silent=False)
-    
-    return total_batches_needed, batches_to_generate, batch_dict
-
-def generate_batches_single_thread(start_hex, range_bits, address, batch_size, start_batch_id=0, max_batches=None):
-    """Generate batch dari range hex (single thread - legacy)"""
-    global CURRENT_LOG_FILE
-    
-    start_int = int(start_hex, 16)
-    total_keys = 1 << range_bits
-    end_int = start_int + total_keys - 1
-    
-    total_batches_needed = math.ceil(total_keys / batch_size)
-    
-    # Limit jumlah batch jika ada max_batches
-    if max_batches is not None:
-        batches_to_generate = min(total_batches_needed, max_batches)
-    else:
-        batches_to_generate = total_batches_needed
-    
-    print(f"\n{'='*60}")
-    print(f"GENERATING BATCHES - SINGLE THREAD")
-    print(f"{'='*60}")
-    
-    # Tentukan apakah perlu membuat file baru
-    create_new_file = False
-    if start_batch_id == 0:
-        # Jika mulai dari awal, buat file baru
-        create_new_file = True
-    elif CURRENT_LOG_FILE and os.path.exists(CURRENT_LOG_FILE):
-        # Cek apakah file saat ini sudah besar
-        create_new_file = should_create_new_batch_file(CURRENT_LOG_FILE, batches_to_generate)
-    
-    if create_new_file:
-        print(f"🆕 Creating new batch file for this run...")
-    
-    # Baca batch yang sudah ada (jika melanjutkan dan tidak membuat file baru)
-    if start_batch_id > 0 and not create_new_file:
-        batch_dict = read_current_batches_as_dict()
-        # Juga baca dari file sebelumnya jika ada
-        existing_batches = read_all_batches_as_dict()
-        # Gabungkan, prioritaskan yang baru
-        batch_dict.update(existing_batches)
-    else:
-        batch_dict = {}
-    
-    start_time = time.time()
-    
-    for i in range(batches_to_generate):
-        batch_id = start_batch_id + i
-        batch_start = start_int + (i * batch_size)
-        batch_end = min(batch_start + batch_size, end_int + 1)
-        batch_keys = batch_end - batch_start
-        
-        batch_start_hex = format(batch_start, 'x')
-        batch_end_hex = format(batch_end - 1, 'x')  # -1 karena end inklusif
-        
-        # Buat informasi batch (hanya 2 kolom)
-        batch_info = {
-            'batch_id': str(batch_id),
-            'start_hex': batch_start_hex,
-            'end_hex': batch_end_hex
-        }
-        
-        batch_dict[str(batch_id)] = batch_info
-        
-        # Tampilkan progress setiap 10 batch atau batch terakhir
-        if (i + 1) % 10 == 0 or i == batches_to_generate - 1:
-            elapsed = time.time() - start_time
-            batches_per_sec = (i + 1) / elapsed if elapsed > 0 else 0
-            print(f"✅ Generated batch {i+1}/{batches_to_generate}: ID={batch_id}, "
-                  f"Speed={batches_per_sec:.1f} batches/sec")
-    
-    elapsed_time = time.time() - start_time
-    print(f"\n⏱️  Generation time: {elapsed_time:.2f} seconds")
-    
-    # Tulis batch ke file
-    write_batches_from_dict(batch_dict, create_new_file)
-    
-    # Simpan info batch berikutnya jika belum selesai semua
-    if batches_to_generate < total_batches_needed:
-        next_start_int = start_int + (batches_to_generate * batch_size)
-        next_start_hex = format(next_start_int, 'x')
-        
-        save_next_batch_info(
-            start_hex,
-            range_bits,
-            address,
-            next_start_hex,
-            start_batch_id + batches_to_generate,
-            total_batches_needed
-        )
     
     return total_batches_needed, batches_to_generate, batch_dict
 
@@ -703,11 +472,9 @@ def display_batch_summary():
                 except:
                     pass
                 
-                marker = " 🟢" if file == get_latest_batch_file() else ""
-                print(f"  {file}: {file_batches} batches, {file_size:,} bytes{marker}")
+                print(f"  {file}: {file_batches} batches, {file_size:,} bytes")
             
             print(f"\n📊 File totals: {total_file_batches} batches, {total_file_size:,} bytes ({total_file_size/1024/1024:.2f} MB)")
-            print(f"🟢 Current/latest file: {get_latest_batch_file()}")
         
         # Tampilkan format file
         print(f"\n📋 File format: {BATCH_COLUMNS}")
@@ -780,7 +547,6 @@ def continue_generation_auto(batch_size, max_batches=None):
         print(f"Current batch file: {current_file}")
         print(f"Timestamp: {next_info.get('timestamp', 'unknown')}")
         print(f"Output format: {BATCH_COLUMNS}")
-        print(f"Threads: {MAX_THREADS}")
         print(f"{'='*60}")
         
         # Hitung jumlah batch yang tersisa
@@ -799,8 +565,8 @@ def continue_generation_auto(batch_size, max_batches=None):
         print(f"\nGenerating {batches_to_generate:,} more batches")
         print(f"{remaining_batches:,} batches remaining in total")
         
-        # Generate batch menggunakan multithreading
-        total_batches_needed, actual_generated, batch_dict = generate_batches_multithreaded(
+        # Generate batch
+        total_batches_needed, actual_generated, batch_dict = generate_batches(
             start_hex, range_bits, address, batch_size, 
             start_batch_id=batches_generated, max_batches=batches_to_generate
         )
@@ -820,10 +586,6 @@ def continue_generation_auto(batch_size, max_batches=None):
             print(f"{'='*60}")
             print(f"Total runs: {run_count}")
             print(f"Total batches: {batches_generated + actual_generated:,}")
-            
-            # Upload final summary
-            print(f"\n🔄 Uploading final summary to Google Drive...")
-            save_to_drive(silent=False)
             break
         
         if batches_generated + actual_generated >= total_batches:
@@ -832,10 +594,6 @@ def continue_generation_auto(batch_size, max_batches=None):
             print(f"{'='*60}")
             print(f"Total runs: {run_count}")
             print(f"Total batches: {batches_generated + actual_generated:,}")
-            
-            # Upload final summary
-            print(f"\n🔄 Uploading final summary to Google Drive...")
-            save_to_drive(silent=False)
             break
         
         # LANGSUNG LANJUT TANPA KONFIRMASI
@@ -848,7 +606,7 @@ def continue_generation_auto(batch_size, max_batches=None):
         # Lanjut ke iterasi berikutnya tanpa konfirmasi
         continue
 
-def continue_generation_single(batch_size, max_batches=None, use_multithread=True):
+def continue_generation_single(batch_size, max_batches=None):
     """Lanjutkan generate batch dari state yang tersimpan (single run)"""
     global CURRENT_LOG_FILE
     
@@ -879,17 +637,10 @@ def continue_generation_single(batch_size, max_batches=None, use_multithread=Tru
         print("✅ All batches already generated!")
         sys.exit(0)
     
-    # Pilih metode berdasarkan parameter
-    if use_multithread:
-        total_batches_needed, actual_generated, batch_dict = generate_batches_multithreaded(
-            start_hex, range_bits, address, batch_size, 
-            start_batch_id=batches_generated, max_batches=batches_to_generate
-        )
-    else:
-        total_batches_needed, actual_generated, batch_dict = generate_batches_single_thread(
-            start_hex, range_bits, address, batch_size, 
-            start_batch_id=batches_generated, max_batches=batches_to_generate
-        )
+    total_batches_needed, actual_generated, batch_dict = generate_batches(
+        start_hex, range_bits, address, batch_size, 
+        start_batch_id=batches_generated, max_batches=batches_to_generate
+    )
     
     print(f"\n{'='*60}")
     print(f"✅ GENERATION COMPLETED")
@@ -971,8 +722,7 @@ def display_file_info():
                     batch_count = sum(1 for _ in reader)
                 total_batches += batch_count
             
-            marker = " 🟢" if file == get_latest_batch_file() else ""
-            print(f"\n📄 {file}{marker}:")
+            print(f"\n📄 {file}:")
             print(f"   Size: {file_size:,} bytes ({file_size/1024:.2f} KB)")
             print(f"   Batches: {batch_count}")
             
@@ -987,8 +737,6 @@ def display_file_info():
     print(f"   Files: {len(batch_files)}")
     print(f"   Total size: {total_size:,} bytes ({total_size/1024/1024:.2f} MB)")
     print(f"   Total batches: {total_batches}")
-    print(f"   Latest file: {get_latest_batch_file()}")
-    print(f"   Threads available: {MAX_THREADS}")
     print(f"{'='*60}")
     
     # Info next batch jika ada
@@ -1011,8 +759,7 @@ def main():
     print(f"Output format: {BATCH_COLUMNS}")
     print(f"Auto-continue until completion (no confirmation)")
     print(f"Multiple batch files with auto-incrementing index")
-    print(f"Smart Google Drive upload (only latest files)")
-    print(f"🚀 MULTITHREADED with {MAX_THREADS} threads")
+    print(f"Auto-save to Google Drive")
     print("="*60)
     
     if len(sys.argv) < 2:
@@ -1020,21 +767,17 @@ def main():
         print("  Generate batches: python3 genb.py --generate START_HEX RANGE_BITS [ADDRESS]")
         print("  Continue generation (auto until completion, NO CONFIRMATION): python3 genb.py --continue")
         print("  Continue (single run): python3 genb.py --continue-single")
-        print("  Continue (single run, single thread): python3 genb.py --continue-single-st")
         print("  Show summary: python3 genb.py --summary")
         print("  Export to CSV: python3 genb.py --export [filename.csv]")
         print("  Set batch size: python3 genb.py --set-size SIZE")
-        print("  Set thread count: python3 genb.py --set-threads NUM")
         print("  File info: python3 genb.py --info")
         print("\nOptions:")
         print(f"  Default batch size: {BATCH_SIZE:,} keys")
         print(f"  Default address: {DEFAULT_ADDRESS}")
         print(f"  Max batches per run: {MAX_BATCHES_PER_RUN:,}")
-        print(f"  Max threads: {MAX_THREADS}")
         print(f"  Output columns: {BATCH_COLUMNS}")
         print(f"  Batch files: {LOG_FILE_PREFIX}_001.txt, {LOG_FILE_PREFIX}_002.txt, ...")
         print(f"  Auto-create new file when: file > 10MB or > 10,000 batches")
-        print(f"  Google Drive: Only uploads latest batch file and nextbatch.txt")
         print(f"  --continue: Will run continuously WITHOUT asking for confirmation")
         sys.exit(1)
     
@@ -1077,51 +820,19 @@ def main():
             sys.exit(1)
         sys.exit(0)
     
-    # Set thread count mode
-    elif sys.argv[1] == "--set-threads":
-        if len(sys.argv) != 3:
-            print("Usage: python3 genb.py --set-threads NUM")
-            sys.exit(1)
-        
-        try:
-            new_threads = int(sys.argv[2])
-            if new_threads <= 0 or new_threads > 64:
-                print("❌ Thread count must be between 1 and 64")
-                sys.exit(1)
-            
-            # Update global MAX_THREADS
-            globals()['MAX_THREADS'] = new_threads
-            print(f"✅ Thread count set to {new_threads}")
-        except ValueError:
-            print("❌ Invalid thread count. Must be an integer.")
-            sys.exit(1)
-        sys.exit(0)
-    
-    # Continue mode (single run, single thread)
-    elif sys.argv[1] == "--continue-single-st":
-        # Set current batch file
-        CURRENT_LOG_FILE = get_current_batch_file()
-        print(f"📁 Current batch file: {CURRENT_LOG_FILE}")
-        print(f"⚠️  Using SINGLE THREAD mode")
-        
-        continue_generation_single(BATCH_SIZE, MAX_BATCHES_PER_RUN, use_multithread=False)
-        sys.exit(0)
-    
-    # Continue mode (single run, multithreaded)
+    # Continue mode (single run)
     elif sys.argv[1] == "--continue-single":
         # Set current batch file
         CURRENT_LOG_FILE = get_current_batch_file()
         print(f"📁 Current batch file: {CURRENT_LOG_FILE}")
-        print(f"🚀 Using MULTITHREADED mode with {MAX_THREADS} threads")
         
-        continue_generation_single(BATCH_SIZE, MAX_BATCHES_PER_RUN, use_multithread=True)
+        continue_generation_single(BATCH_SIZE, MAX_BATCHES_PER_RUN)
         sys.exit(0)
     
     # Continue mode (auto - until completion, NO CONFIRMATION)
     elif sys.argv[1] == "--continue":
         CURRENT_LOG_FILE = get_current_batch_file()
         print(f"📁 Starting with batch file: {CURRENT_LOG_FILE}")
-        print(f"🚀 Using MULTITHREADED mode with {MAX_THREADS} threads")
         print(f"⚠️  WARNING: Auto-continue mode activated. Process will run until completion WITHOUT confirmation.")
         print(f"   Press Ctrl+C to stop at any time.\n")
         
@@ -1159,10 +870,8 @@ def main():
         # Set current batch file (akan dibuat baru)
         CURRENT_LOG_FILE = None
         
-        print(f"🚀 Using MULTITHREADED mode with {MAX_THREADS} threads")
-        
-        # Generate batches menggunakan multithreading
-        total_batches_needed, batches_generated, _ = generate_batches_multithreaded(
+        # Generate batches
+        total_batches_needed, batches_generated, _ = generate_batches(
             start_hex, range_bits, address, BATCH_SIZE, max_batches=MAX_BATCHES_PER_RUN
         )
         
@@ -1181,8 +890,7 @@ def main():
         if batches_generated < total_batches_needed:
             print(f"Batches remaining: {total_batches_needed - batches_generated}")
             print(f"To continue (auto, no confirmation): python3 genb.py --continue")
-            print(f"To continue single run (multithreaded): python3 genb.py --continue-single")
-            print(f"To continue single run (single thread): python3 genb.py --continue-single-st")
+            print(f"To continue single run: python3 genb.py --continue-single")
         
         display_batch_summary()
         
@@ -1190,8 +898,7 @@ def main():
         print("❌ Invalid command")
         print("Usage: python3 genb.py --generate START_HEX RANGE_BITS [ADDRESS]")
         print("Or:    python3 genb.py --continue (auto until completion, NO CONFIRMATION)")
-        print("Or:    python3 genb.py --continue-single (single run, multithreaded)")
-        print("Or:    python3 genb.py --continue-single-st (single run, single thread)")
+        print("Or:    python3 genb.py --continue-single (single run)")
         print("Or:    python3 genb.py --summary")
         print("Or:    python3 genb.py --info")
         sys.exit(1)
