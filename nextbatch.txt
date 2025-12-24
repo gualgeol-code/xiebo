@@ -1,9 +1,9 @@
-original_start=7e7336287142000000
+original_start=7f19beb8dd1ab00000
 original_range_bits=70
 address=N/A
-next_start_hex=7f19beb8dd1ab00000
-batches_generated=194000000
+next_start_hex=7fc0474948f3600000
+batches_generated=196000000
 total_batches=196765271
-timestamp=2025-12-24 16:57:50
-current_batch_file=generated_batches_097.txt
-current_batch_index=97
+timestamp=2025-12-24 22:12:08
+current_batch_file=generated_batches_098.txt
+current_batch_index=98
