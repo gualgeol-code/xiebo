@@ -26,6 +26,7 @@ DEFAULT_ADDRESS = "N/A"                # Default address untuk batch generation
 
 # Variabel global untuk tracking file batch
 CURRENT_LOG_FILE = None                # File batch yang sedang aktif
+LAST_UPLOADED_FILE = None              # File terakhir yang sudah diupload
 
 def get_next_batch_filename():
     """Mendapatkan nama file batch berikutnya dengan penomoran"""
@@ -81,6 +82,22 @@ def get_current_batch_index():
     except (ValueError, IndexError):
         return 1
 
+def get_latest_batch_file():
+    """Mendapatkan file batch terbaru (dengan index tertinggi)"""
+    batch_files = []
+    
+    # Cari semua file batch
+    for file in os.listdir('.'):
+        if file.startswith(LOG_FILE_PREFIX) and file.endswith(LOG_FILE_EXT):
+            batch_files.append(file)
+    
+    if not batch_files:
+        return None
+    
+    # Urutkan berdasarkan index
+    batch_files.sort()
+    return batch_files[-1]  # File dengan index tertinggi
+
 def should_create_new_batch_file(current_file, new_batch_count):
     """Menentukan apakah perlu membuat file batch baru"""
     if not os.path.exists(current_file):
@@ -109,7 +126,9 @@ def should_create_new_batch_file(current_file, new_batch_count):
     return False
 
 def save_to_drive(silent=False):
-    """Menyimpan file ke Google Drive"""
+    """Menyimpan file ke Google Drive - HANYA file terakhir dan nextbatch.txt"""
+    global LAST_UPLOADED_FILE
+    
     try:
         # Cek apakah Google Drive tersedia (untuk Google Colab)
         if not os.path.exists(DRIVE_MOUNT_PATH):
@@ -133,26 +152,66 @@ def save_to_drive(silent=False):
         
         uploaded_files = []
         
-        # Salin semua file batch
-        for file in os.listdir('.'):
-            if file.startswith(LOG_FILE_PREFIX) and file.endswith(LOG_FILE_EXT):
-                src = file
-                dst = os.path.join(drive_mydrive_path, file)
+        # 1. Upload file batch terakhir saja
+        latest_batch_file = get_latest_batch_file()
+        if latest_batch_file:
+            src = latest_batch_file
+            dst = os.path.join(drive_mydrive_path, latest_batch_file)
+            
+            # Cek apakah file sudah diupload sebelumnya dan tidak berubah
+            if LAST_UPLOADED_FILE == latest_batch_file and os.path.exists(dst):
+                # Cek apakah file berubah
+                src_mtime = os.path.getmtime(src) if os.path.exists(src) else 0
+                dst_mtime = os.path.getmtime(dst) if os.path.exists(dst) else 0
+                
+                if src_mtime <= dst_mtime:
+                    # File tidak berubah, skip upload
+                    if not silent:
+                        print(f"  ⏭️  Skipping {latest_batch_file} (already uploaded and unchanged)")
+                else:
+                    # File berubah, upload ulang
+                    shutil.copy2(src, dst)
+                    LAST_UPLOADED_FILE = latest_batch_file
+                    uploaded_files.append(latest_batch_file)
+                    if not silent:
+                        print(f"  🔄 Updated {latest_batch_file} to Google Drive")
+            else:
+                # File baru atau belum diupload
                 shutil.copy2(src, dst)
-                uploaded_files.append(file)
+                LAST_UPLOADED_FILE = latest_batch_file
+                uploaded_files.append(latest_batch_file)
                 if not silent:
-                    print(f"  ✅ Saved {file} to Google Drive")
+                    print(f"  ✅ Saved {latest_batch_file} to Google Drive")
         
-        # Salin file nextbatch.txt jika ada
+        # 2. Upload file nextbatch.txt jika ada
         if os.path.exists(NEXT_BATCH_FILE):
             src_next = NEXT_BATCH_FILE
             dst_next = os.path.join(drive_mydrive_path, "nextbatch.txt")
-            shutil.copy2(src_next, dst_next)
-            if not silent:
-                print(f"  ✅ Saved nextbatch.txt to Google Drive")
+            
+            # Cek apakah file nextbatch.txt berubah
+            if os.path.exists(dst_next):
+                src_mtime = os.path.getmtime(src_next) if os.path.exists(src_next) else 0
+                dst_mtime = os.path.getmtime(dst_next) if os.path.exists(dst_next) else 0
+                
+                if src_mtime <= dst_mtime:
+                    # File tidak berubah, skip
+                    if not silent:
+                        print(f"  ⏭️  Skipping nextbatch.txt (already uploaded and unchanged)")
+                else:
+                    # File berubah, upload ulang
+                    shutil.copy2(src_next, dst_next)
+                    uploaded_files.append("nextbatch.txt")
+                    if not silent:
+                        print(f"  🔄 Updated nextbatch.txt to Google Drive")
+            else:
+                # File baru
+                shutil.copy2(src_next, dst_next)
+                uploaded_files.append("nextbatch.txt")
+                if not silent:
+                    print(f"  ✅ Saved nextbatch.txt to Google Drive")
         
         if not silent and uploaded_files:
-            print(f"📤 Uploaded {len(uploaded_files)} batch files to Google Drive")
+            print(f"📤 Uploaded {len(uploaded_files)} file(s) to Google Drive")
         
         return True
                 
@@ -242,7 +301,7 @@ def write_batches_from_dict(batch_dict, create_new_file=False):
         print(f"💾 Batch data saved to: {CURRENT_LOG_FILE}")
         print(f"📊 Total batches in file: {len(rows)}")
         
-        # Simpan ke Google Drive (dengan feedback)
+        # Simpan ke Google Drive (dengan feedback) - HANYA upload file ini
         print(f"🔄 Saving to Google Drive...")
         save_to_drive(silent=False)
         
@@ -274,7 +333,7 @@ def save_next_batch_info(start_hex, range_bits, address, next_start_hex, batches
             for key, value in info.items():
                 f.write(f"{key}={value}\n")
         
-        # 2. Simpan ke Google Drive
+        # 2. Simpan ke Google Drive - HANYA upload file nextbatch.txt
         print(f"\n🔄 Saving next batch info to Google Drive...")
         save_to_drive(silent=False)
         
@@ -425,6 +484,10 @@ def generate_batches(start_hex, range_bits, address, batch_size, start_batch_id=
         if os.path.exists(NEXT_BATCH_FILE):
             os.remove(NEXT_BATCH_FILE)
             print(f"\n🗑️  All batches completed. Removed {NEXT_BATCH_FILE}")
+        
+        # Upload final file ke Google Drive
+        print(f"\n🔄 Uploading final batch file to Google Drive...")
+        save_to_drive(silent=False)
     
     return total_batches_needed, batches_to_generate, batch_dict
 
@@ -472,9 +535,11 @@ def display_batch_summary():
                 except:
                     pass
                 
-                print(f"  {file}: {file_batches} batches, {file_size:,} bytes")
+                marker = " 🟢" if file == get_latest_batch_file() else ""
+                print(f"  {file}: {file_batches} batches, {file_size:,} bytes{marker}")
             
             print(f"\n📊 File totals: {total_file_batches} batches, {total_file_size:,} bytes ({total_file_size/1024/1024:.2f} MB)")
+            print(f"🟢 Current/latest file: {get_latest_batch_file()}")
         
         # Tampilkan format file
         print(f"\n📋 File format: {BATCH_COLUMNS}")
@@ -586,6 +651,10 @@ def continue_generation_auto(batch_size, max_batches=None):
             print(f"{'='*60}")
             print(f"Total runs: {run_count}")
             print(f"Total batches: {batches_generated + actual_generated:,}")
+            
+            # Upload final summary
+            print(f"\n🔄 Uploading final summary to Google Drive...")
+            save_to_drive(silent=False)
             break
         
         if batches_generated + actual_generated >= total_batches:
@@ -594,6 +663,10 @@ def continue_generation_auto(batch_size, max_batches=None):
             print(f"{'='*60}")
             print(f"Total runs: {run_count}")
             print(f"Total batches: {batches_generated + actual_generated:,}")
+            
+            # Upload final summary
+            print(f"\n🔄 Uploading final summary to Google Drive...")
+            save_to_drive(silent=False)
             break
         
         # LANGSUNG LANJUT TANPA KONFIRMASI
@@ -722,7 +795,8 @@ def display_file_info():
                     batch_count = sum(1 for _ in reader)
                 total_batches += batch_count
             
-            print(f"\n📄 {file}:")
+            marker = " 🟢" if file == get_latest_batch_file() else ""
+            print(f"\n📄 {file}{marker}:")
             print(f"   Size: {file_size:,} bytes ({file_size/1024:.2f} KB)")
             print(f"   Batches: {batch_count}")
             
@@ -737,6 +811,7 @@ def display_file_info():
     print(f"   Files: {len(batch_files)}")
     print(f"   Total size: {total_size:,} bytes ({total_size/1024/1024:.2f} MB)")
     print(f"   Total batches: {total_batches}")
+    print(f"   Latest file: {get_latest_batch_file()}")
     print(f"{'='*60}")
     
     # Info next batch jika ada
@@ -759,7 +834,7 @@ def main():
     print(f"Output format: {BATCH_COLUMNS}")
     print(f"Auto-continue until completion (no confirmation)")
     print(f"Multiple batch files with auto-incrementing index")
-    print(f"Auto-save to Google Drive")
+    print(f"Smart Google Drive upload (only latest files)")
     print("="*60)
     
     if len(sys.argv) < 2:
@@ -778,6 +853,7 @@ def main():
         print(f"  Output columns: {BATCH_COLUMNS}")
         print(f"  Batch files: {LOG_FILE_PREFIX}_001.txt, {LOG_FILE_PREFIX}_002.txt, ...")
         print(f"  Auto-create new file when: file > 10MB or > 10,000 batches")
+        print(f"  Google Drive: Only uploads latest batch file and nextbatch.txt")
         print(f"  --continue: Will run continuously WITHOUT asking for confirmation")
         sys.exit(1)
     
