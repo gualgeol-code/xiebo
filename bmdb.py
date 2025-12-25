@@ -38,50 +38,8 @@ def connect_db():
         print(f"❌ Database connection error: {e}")
         return None
 
-def initialize_database():
-    """Inisialisasi tabel Tbatch jika belum ada"""
-    conn = connect_db()
-    if not conn:
-        return False
-    
-    try:
-        cursor = conn.cursor()
-        
-        # Cek apakah tabel Tbatch sudah ada
-        cursor.execute("""
-            SELECT COUNT(*) 
-            FROM INFORMATION_SCHEMA.TABLES 
-            WHERE TABLE_NAME = 'Tbatch' AND TABLE_SCHEMA = 'dbo'
-        """)
-        
-        if cursor.fetchone()[0] == 0:
-            # Buat tabel Tbatch
-            cursor.execute(f"""
-                CREATE TABLE {TABLE} (
-                    id INT PRIMARY KEY,
-                    start_range VARCHAR(64),
-                    end_range VARCHAR(64),
-                    status VARCHAR(20) DEFAULT 'uncheck',
-                    found VARCHAR(3) DEFAULT '',
-                    wif VARCHAR(255) DEFAULT ''
-                )
-            """)
-            conn.commit()
-            print("✅ Created Tbatch table")
-        
-        cursor.close()
-        conn.close()
-        return True
-        
-    except Exception as e:
-        print(f"❌ Error initializing database: {e}")
-        if conn:
-            conn.rollback()
-            conn.close()
-        return False
-
-def get_batch_range(start_id):
-    """Mengambil batch range dari database berdasarkan ID"""
+def get_batch_by_id(batch_id):
+    """Mengambil data batch berdasarkan ID"""
     conn = connect_db()
     if not conn:
         return None
@@ -89,29 +47,28 @@ def get_batch_range(start_id):
     try:
         cursor = conn.cursor()
         
-        # Ambil batch dengan status 'uncheck' dimulai dari ID tertentu
+        # Ambil data batch berdasarkan ID
         cursor.execute(f"""
             SELECT id, start_range, end_range, status, found, wif
             FROM {TABLE} 
-            WHERE id >= ? AND status IN ('uncheck', '')
-            ORDER BY id
-            OFFSET 0 ROWS FETCH NEXT ? ROWS ONLY
-        """, (start_id, MAX_BATCHES_PER_RUN))
+            WHERE id = ?
+        """, (batch_id,))
         
-        batches = []
-        columns = [column[0] for column in cursor.description]
+        row = cursor.fetchone()
         
-        for row in cursor.fetchall():
+        if row:
+            columns = [column[0] for column in cursor.description]
             batch = dict(zip(columns, row))
-            batches.append(batch)
+        else:
+            batch = None
         
         cursor.close()
         conn.close()
         
-        return batches
+        return batch
         
     except Exception as e:
-        print(f"❌ Error getting batch range: {e}")
+        print(f"❌ Error getting batch by ID: {e}")
         if conn:
             conn.close()
         return None
@@ -145,45 +102,6 @@ def update_batch_status(batch_id, status, found='', wif=''):
             conn.rollback()
             conn.close()
         return False
-
-def get_batch_summary():
-    """Mendapatkan summary dari database"""
-    conn = connect_db()
-    if not conn:
-        return None
-    
-    try:
-        cursor = conn.cursor()
-        
-        # Hitung total dan status
-        cursor.execute(f"""
-            SELECT 
-                COUNT(*) as total,
-                SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done,
-                SUM(CASE WHEN status = 'inprogress' THEN 1 ELSE 0 END) as inprogress,
-                SUM(CASE WHEN status = 'uncheck' THEN 1 ELSE 0 END) as uncheck,
-                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error,
-                SUM(CASE WHEN status = 'interrupted' THEN 1 ELSE 0 END) as interrupted,
-                SUM(CASE WHEN found = 'Yes' THEN 1 ELSE 0 END) as found_yes,
-                MIN(id) as min_id,
-                MAX(id) as max_id
-            FROM {TABLE}
-        """)
-        
-        result = cursor.fetchone()
-        columns = [column[0] for column in cursor.description]
-        summary = dict(zip(columns, result))
-        
-        cursor.close()
-        conn.close()
-        
-        return summary
-        
-    except Exception as e:
-        print(f"❌ Error getting batch summary: {e}")
-        if conn:
-            conn.close()
-        return None
 
 def calculate_range_bits(start_hex, end_hex):
     """Menghitung range bits dari start dan end hex"""
@@ -459,38 +377,11 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
         
         return 1, {'found': False}
 
-def display_database_summary():
-    """Menampilkan summary dari database"""
-    summary = get_batch_summary()
-    
-    if not summary:
-        print("❌ Unable to get database summary")
-        return
-    
-    print(f"\n{'='*60}")
-    print("📊 DATABASE SUMMARY")
-    print(f"{'='*60}")
-    print(f"Total batches in DB: {summary['total']}")
-    print(f"Batch ID range: {summary['min_id']} - {summary['max_id']}")
-    print(f"\nStatus distribution:")
-    print(f"  Done:        {summary['done'] or 0}")
-    print(f"  In Progress: {summary['inprogress'] or 0}")
-    print(f"  Unchecked:   {summary['uncheck'] or 0}")
-    print(f"  Error:       {summary['error'] or 0}")
-    print(f"  Interrupted: {summary['interrupted'] or 0}")
-    print(f"\nFound private keys: {summary['found_yes'] or 0}")
-    print(f"{'='*60}")
-
 def main():
     global STOP_SEARCH_FLAG
     
     # Reset flag stop search setiap kali program dijalankan
     STOP_SEARCH_FLAG = False
-    
-    # Inisialisasi database
-    if not initialize_database():
-        print("❌ Failed to initialize database. Exiting...")
-        sys.exit(1)
     
     # Parse arguments
     if len(sys.argv) < 2:
@@ -498,22 +389,17 @@ def main():
         print("Usage:")
         print("  Single run: python3 bm.py GPU_ID START_HEX RANGE_BITS ADDRESS")
         print("  Batch run from DB: python3 bm.py --batch-db GPU_ID START_ID ADDRESS")
-        print("  Show summary: python3 bm.py --summary")
         print("\n⚠️  FEATURES:")
         print("  - Menggunakan database SQL Server")
-        print("  - Baca range dari tabel Tbatch")
+        print("  - Baca range dari tabel Tbatch berdasarkan ID")
         print(f"  - Maksimal {MAX_BATCHES_PER_RUN} batch per eksekusi")
         print("  - Auto-stop ketika ditemukan Found: 1 atau lebih")
         print("  - Real-time output display with colors")
+        print("  - Continue ke ID berikutnya secara otomatis")
         sys.exit(1)
     
-    # Show summary mode
-    if sys.argv[1] == "--summary":
-        display_database_summary()
-        sys.exit(0)
-    
     # Batch run from database mode
-    elif sys.argv[1] == "--batch-db" and len(sys.argv) == 5:
+    if sys.argv[1] == "--batch-db" and len(sys.argv) == 5:
         gpu_id = sys.argv[2]
         start_id = int(sys.argv[3])
         address = sys.argv[4]
@@ -527,36 +413,43 @@ def main():
         print(f"Max batches per run: {MAX_BATCHES_PER_RUN}")
         print(f"{'='*80}")
         
-        # Ambil batch dari database
-        batches = get_batch_range(start_id)
+        current_id = start_id
+        batches_processed = 0
         
-        if not batches or len(batches) == 0:
-            print("❌ No batches found to process")
-            sys.exit(1)
-        
-        print(f"\n📋 Found {len(batches)} batches to process")
-        
-        # Jalankan setiap batch
-        for i, batch in enumerate(batches):
-            if STOP_SEARCH_FLAG:
-                print(f"\n{'='*80}")
-                print(f"🚨 AUTO-STOP TRIGGERED!")
-                print(f"{'='*80}")
-                print(f"Pencarian dihentikan karena private key telah ditemukan")
-                print(f"Batch yang tersisa ({i+1}/{len(batches)}) tidak akan dijalankan")
-                print(f"{'='*80}")
+        # Loop untuk memproses batch secara berurutan
+        while batches_processed < MAX_BATCHES_PER_RUN and not STOP_SEARCH_FLAG:
+            print(f"\n📋 Processing batch ID: {current_id}")
+            
+            # Ambil data batch berdasarkan ID
+            batch = get_batch_by_id(current_id)
+            
+            if not batch:
+                print(f"❌ Batch ID {current_id} not found in database. Stopping.")
                 break
             
-            batch_id = batch['id']
+            # Cek status batch
+            status = batch.get('status', '').strip()
+            
+            if status == 'done':
+                print(f"⏭️  Batch ID {current_id} already done. Skipping to next ID.")
+                current_id += 1
+                continue
+            
+            if status == 'inprogress':
+                print(f"⏭️  Batch ID {current_id} is in progress. Skipping to next ID.")
+                current_id += 1
+                continue
+            
+            # Ambil data range
             start_range = batch['start_range']
             end_range = batch['end_range']
             
             # Hitung range bits
             range_bits = calculate_range_bits(start_range, end_range)
             
-            # Run this batch
+            # Run batch
             print(f"\n{'='*80}")
-            print(f"▶️  BATCH {i+1}/{len(batches)} (ID: {batch_id})")
+            print(f"▶️  BATCH {batches_processed + 1} (ID: {current_id})")
             print(f"{'='*80}")
             print(f"Start Range: {start_range}")
             print(f"End Range: {end_range}")
@@ -564,37 +457,43 @@ def main():
             print(f"Address: {address}")
             print(f"{'='*80}")
             
-            return_code, found_info = run_xiebo(gpu_id, start_range, range_bits, address, batch_id=batch_id)
+            return_code, found_info = run_xiebo(gpu_id, start_range, range_bits, address, batch_id=current_id)
             
             if return_code == 0:
-                print(f"\n✅ Batch {batch_id} completed successfully")
+                print(f"\n✅ Batch ID {current_id} completed successfully")
             else:
-                print(f"\n⚠️  Batch {batch_id} exited with code {return_code}")
+                print(f"\n⚠️  Batch ID {current_id} exited with code {return_code}")
+            
+            # Increment counters
+            batches_processed += 1
+            current_id += 1
             
             # Tampilkan progress
-            if (i + 1) % 5 == 0 or i == len(batches) - 1:
-                percentage = ((i + 1) / len(batches)) * 100
-                print(f"\n📈 Progress: {i+1}/{len(batches)} batches ({percentage:.1f}%)")
+            if batches_processed % 5 == 0 or STOP_SEARCH_FLAG:
+                print(f"\n📈 Progress: {batches_processed} batches processed, current ID: {current_id}")
             
-            # Delay antara batch
-            if i < len(batches) - 1 and not STOP_SEARCH_FLAG:
-                print(f"\n⏱️  Waiting 5 seconds before next batch...")
-                time.sleep(5)
+            # Delay antara batch (kecuali jika STOP_SEARCH_FLAG aktif)
+            if not STOP_SEARCH_FLAG and batches_processed < MAX_BATCHES_PER_RUN:
+                print(f"\n⏱️  Waiting 3 seconds before next batch...")
+                time.sleep(3)
         
         print(f"\n{'='*80}")
         if STOP_SEARCH_FLAG:
             print(f"🎯 SEARCH STOPPED - PRIVATE KEY FOUND!")
+        elif batches_processed >= MAX_BATCHES_PER_RUN:
+            print(f"⏹️  MAX BATCHES REACHED - Processed {batches_processed} batches")
         else:
-            print(f"✅ ALL BATCHES PROCESSED!")
+            print(f"✅ PROCESSING COMPLETED - Processed {batches_processed} batches")
         print(f"{'='*80}")
         
-        # Tampilkan summary
-        display_database_summary()
+        print(f"\n📋 Summary:")
+        print(f"  Start ID: {start_id}")
+        print(f"  Last processed ID: {current_id - 1}")
+        print(f"  Batches processed: {batches_processed}")
+        print(f"  Next ID to process: {current_id}")
         
-        # Cek jika ada private key yang ditemukan
-        summary = get_batch_summary()
-        if summary and summary['found_yes'] and summary['found_yes'] > 0:
-            print(f"\n🔥 {summary['found_yes']} PRIVATE KEY(S) FOUND!")
+        if STOP_SEARCH_FLAG:
+            print(f"\n🔥 PRIVATE KEY FOUND!")
             print(f"   Check database table Tbatch for details")
         
     # Single run mode (tetap support untuk backward compatibility)
@@ -621,7 +520,6 @@ def main():
         print("Invalid arguments")
         print("Usage: python3 bm.py GPU_ID START_HEX RANGE_BITS ADDRESS")
         print("Or:    python3 bm.py --batch-db GPU_ID START_ID ADDRESS")
-        print("Or:    python3 bm.py --summary")
         return 1
 
 if __name__ == "__main__":
