@@ -3,8 +3,7 @@ import sys
 import os
 import time
 import math
-from datetime import datetime
-import csv
+import re
 import pyodbc
 
 # Konfigurasi database SQL Server
@@ -18,7 +17,7 @@ TABLE = "dbo.Tbatch"
 STOP_SEARCH_FLAG = False
 
 # Konfigurasi batch
-MAX_BATCHES_PER_RUN = 100  # Maksimal 1juta batch per eksekusi
+MAX_BATCHES_PER_RUN = 1000000  # Maksimal 1juta batch per eksekusi
 
 def connect_db():
     """Membuat koneksi ke database SQL Server"""
@@ -237,7 +236,6 @@ def parse_xiebo_output(output_text):
         # 1. Cari pattern "Found: X" di baris "Range Finished!"
         if 'range finished!' in line_lower and 'found:' in line_lower:
             # Ekstrak angka setelah "Found:"
-            import re
             found_match = re.search(r'found:\s*(\d+)', line_lower)
             if found_match:
                 found_count = int(found_match.group(1))
@@ -298,16 +296,58 @@ def parse_xiebo_output(output_text):
     
     return found_info
 
+def display_xiebo_output_real_time(process):
+    """Menampilkan output xiebo secara real-time"""
+    print("\n" + "─" * 80)
+    print("🎯 XIEBO OUTPUT (REAL-TIME):")
+    print("─" * 80)
+    
+    output_lines = []
+    while True:
+        output_line = process.stdout.readline()
+        if output_line == '' and process.poll() is not None:
+            break
+        if output_line:
+            # Tampilkan output dengan format yang lebih baik
+            stripped_line = output_line.strip()
+            if stripped_line:
+                # Warna untuk output tertentu
+                line_lower = stripped_line.lower()
+                if 'found:' in line_lower or 'success' in line_lower:
+                    # Line dengan hasil ditemukan (warna hijau)
+                    print(f"\033[92m   {stripped_line}\033[0m")
+                elif 'error' in line_lower or 'failed' in line_lower:
+                    # Line dengan error (warna merah)
+                    print(f"\033[91m   {stripped_line}\033[0m")
+                elif 'speed' in line_lower or 'key/s' in line_lower:
+                    # Line dengan informasi speed (warna kuning)
+                    print(f"\033[93m   {stripped_line}\033[0m")
+                elif 'range' in line_lower:
+                    # Line dengan informasi range (warna biru)
+                    print(f"\033[94m   {stripped_line}\033[0m")
+                else:
+                    # Line normal (warna default)
+                    print(f"   {stripped_line}")
+            output_lines.append(output_line)
+    
+    output_text = ''.join(output_lines)
+    print("─" * 80)
+    
+    return output_text
+
 def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
-    """Run xiebo binary langsung dan tampilkan outputnya"""
+    """Run xiebo binary langsung dan tampilkan outputnya secara real-time"""
     global STOP_SEARCH_FLAG
     
     cmd = ["./xiebo", "-gpuId", str(gpu_id), "-start", start_hex, 
            "-range", str(range_bits), address]
     
-    print(f"\n{'='*60}")
-    print(f"Running: {' '.join(cmd)}")
-    print(f"{'='*60}")
+    print(f"\n{'='*80}")
+    print(f"🚀 STARTING XIEBO EXECUTION")
+    print(f"{'='*80}")
+    print(f"Command: {' '.join(cmd)}")
+    print(f"Batch ID: {batch_id if batch_id is not None else 'N/A'}")
+    print(f"{'='*80}")
     
     try:
         # Update status menjadi inprogress jika ada batch_id
@@ -315,8 +355,7 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
             update_batch_status(batch_id, 'inprogress')
         
         # Jalankan xiebo dan tampilkan output secara real-time
-        print(f"\n📤 Starting xiebo process...\n")
-        print(f"{'-'*60}")
+        print(f"\n⏳ Launching xiebo process...")
         
         # Gunakan Popen untuk mendapatkan output real-time
         process = subprocess.Popen(
@@ -329,21 +368,10 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
         )
         
         # Tampilkan output secara real-time
-        output_lines = []
-        while True:
-            output_line = process.stdout.readline()
-            if output_line == '' and process.poll() is not None:
-                break
-            if output_line:
-                # Tampilkan output dengan format yang lebih baik
-                stripped_line = output_line.strip()
-                if stripped_line:
-                    print(f"   {stripped_line}")
-                output_lines.append(output_line)
+        output_text = display_xiebo_output_real_time(process)
         
         # Tunggu proses selesai
         return_code = process.wait()
-        output_text = ''.join(output_lines)
         
         # Parse output untuk mencari private key
         found_info = parse_xiebo_output(output_text)
@@ -364,42 +392,53 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
             # Update status di database
             update_batch_status(batch_id, 'done', found_status, wif_key)
         
-        # Tampilkan hasil pencarian
-        print(f"\n{'='*60}")
-        print(f"🔍 SEARCH RESULT")
-        print(f"{'='*60}")
+        # Tampilkan ringkasan hasil pencarian
+        print(f"\n{'='*80}")
+        print(f"📊 SEARCH RESULT SUMMARY")
+        print(f"{'='*80}")
         
         if found_info['found_count'] > 0:
-            print(f"✅ FOUND: {found_info['found_count']} PRIVATE KEY(S)!")
+            print(f"\033[92m✅ FOUND: {found_info['found_count']} PRIVATE KEY(S)!\033[0m")
         elif found_info['found']:
-            print(f"✅ PRIVATE KEY FOUND!")
+            print(f"\033[92m✅ PRIVATE KEY FOUND!\033[0m")
         else:
-            print(f"❌ Private key not found in this batch")
+            print(f"\033[93m❌ Private key not found in this batch\033[0m")
         
         if found_info['speed_info']:
-            print(f"\n📊 {found_info['speed_info']}")
+            print(f"\n📈 Performance: {found_info['speed_info']}")
         
         if found_info['found'] or found_info['found_count'] > 0:
             print(f"\n📋 Found information:")
             if found_info['raw_output']:
                 for line in found_info['raw_output'].split('\n'):
-                    print(f"   {line}")
+                    if 'found:' in line.lower() or 'priv' in line.lower():
+                        print(f"\033[92m   {line}\033[0m")
+                    else:
+                        print(f"   {line}")
             else:
                 if found_info['private_key_hex']:
-                    print(f"   Priv (HEX): {found_info['private_key_hex']}")
+                    print(f"   Priv (HEX): \033[92m{found_info['private_key_hex']}\033[0m")
                 if found_info['private_key_wif']:
-                    print(f"   Priv (WIF): {found_info['private_key_wif']}")
+                    print(f"   Priv (WIF): \033[92m{found_info['private_key_wif']}\033[0m")
                 if found_info['address']:
-                    print(f"   Address: {found_info['address']}")
+                    print(f"   Address: \033[92m{found_info['address']}\033[0m")
                 if found_info['wif_key']:
-                    print(f"   WIF Key (first 60 chars): {found_info['wif_key']}")
+                    print(f"   WIF Key (first 60 chars): \033[92m{found_info['wif_key']}\033[0m")
         
-        print(f"{'='*60}")
+        print(f"{'='*80}")
+        
+        # Tampilkan return code
+        if return_code == 0:
+            print(f"\n🟢 Process completed successfully (return code: {return_code})")
+        else:
+            print(f"\n🟡 Process completed with return code: {return_code}")
         
         return return_code, found_info
         
     except KeyboardInterrupt:
-        print("\n\n⚠️ Stopped by user")
+        print(f"\n\n{'='*80}")
+        print(f"⚠️  STOPPED BY USER INTERRUPT (Ctrl+C)")
+        print(f"{'='*80}")
         
         # Update status jika batch diinterupsi
         if batch_id is not None:
@@ -408,7 +447,11 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
         return 130, {'found': False}
     except Exception as e:
         error_msg = str(e)
-        print(f"\n❌ Error: {error_msg}")
+        print(f"\n{'='*80}")
+        print(f"❌ ERROR OCCURRED")
+        print(f"{'='*80}")
+        print(f"Error: {error_msg}")
+        print(f"{'='*80}")
         
         # Update status error jika ada batch_id
         if batch_id is not None:
@@ -424,9 +467,9 @@ def display_database_summary():
         print("❌ Unable to get database summary")
         return
     
-    print(f"\n{'='*50}")
+    print(f"\n{'='*60}")
     print("📊 DATABASE SUMMARY")
-    print(f"{'='*50}")
+    print(f"{'='*60}")
     print(f"Total batches in DB: {summary['total']}")
     print(f"Batch ID range: {summary['min_id']} - {summary['max_id']}")
     print(f"\nStatus distribution:")
@@ -436,7 +479,7 @@ def display_database_summary():
     print(f"  Error:       {summary['error'] or 0}")
     print(f"  Interrupted: {summary['interrupted'] or 0}")
     print(f"\nFound private keys: {summary['found_yes'] or 0}")
-    print(f"{'='*50}")
+    print(f"{'='*60}")
 
 def main():
     global STOP_SEARCH_FLAG
@@ -461,6 +504,7 @@ def main():
         print("  - Baca range dari tabel Tbatch")
         print(f"  - Maksimal {MAX_BATCHES_PER_RUN} batch per eksekusi")
         print("  - Auto-stop ketika ditemukan Found: 1 atau lebih")
+        print("  - Real-time output display with colors")
         sys.exit(1)
     
     # Show summary mode
@@ -474,14 +518,14 @@ def main():
         start_id = int(sys.argv[3])
         address = sys.argv[4]
         
-        print(f"\n{'='*60}")
-        print(f"BATCH MODE - DATABASE DRIVEN")
-        print(f"{'='*60}")
+        print(f"\n{'='*80}")
+        print(f"🚀 BATCH MODE - DATABASE DRIVEN")
+        print(f"{'='*80}")
         print(f"GPU: {gpu_id}")
         print(f"Start ID: {start_id}")
         print(f"Address: {address}")
         print(f"Max batches per run: {MAX_BATCHES_PER_RUN}")
-        print(f"{'='*60}")
+        print(f"{'='*80}")
         
         # Ambil batch dari database
         batches = get_batch_range(start_id)
@@ -490,17 +534,17 @@ def main():
             print("❌ No batches found to process")
             sys.exit(1)
         
-        print(f"\nFound {len(batches)} batches to process")
+        print(f"\n📋 Found {len(batches)} batches to process")
         
         # Jalankan setiap batch
         for i, batch in enumerate(batches):
             if STOP_SEARCH_FLAG:
-                print(f"\n{'='*60}")
+                print(f"\n{'='*80}")
                 print(f"🚨 AUTO-STOP TRIGGERED!")
-                print(f"{'='*60}")
+                print(f"{'='*80}")
                 print(f"Pencarian dihentikan karena private key telah ditemukan")
                 print(f"Batch yang tersisa ({i+1}/{len(batches)}) tidak akan dijalankan")
-                print(f"{'='*60}")
+                print(f"{'='*80}")
                 break
             
             batch_id = batch['id']
@@ -511,22 +555,24 @@ def main():
             range_bits = calculate_range_bits(start_range, end_range)
             
             # Run this batch
-            print(f"\n{'='*60}")
+            print(f"\n{'='*80}")
             print(f"▶️  BATCH {i+1}/{len(batches)} (ID: {batch_id})")
-            print(f"{'='*60}")
+            print(f"{'='*80}")
             print(f"Start Range: {start_range}")
             print(f"End Range: {end_range}")
             print(f"Range Bits: {range_bits}")
+            print(f"Address: {address}")
+            print(f"{'='*80}")
             
             return_code, found_info = run_xiebo(gpu_id, start_range, range_bits, address, batch_id=batch_id)
             
             if return_code == 0:
-                print(f"✅ Batch {batch_id} completed successfully")
+                print(f"\n✅ Batch {batch_id} completed successfully")
             else:
-                print(f"⚠️  Batch {batch_id} exited with code {return_code}")
+                print(f"\n⚠️  Batch {batch_id} exited with code {return_code}")
             
             # Tampilkan progress
-            if (i + 1) % 10 == 0 or i == len(batches) - 1:
+            if (i + 1) % 5 == 0 or i == len(batches) - 1:
                 percentage = ((i + 1) / len(batches)) * 100
                 print(f"\n📈 Progress: {i+1}/{len(batches)} batches ({percentage:.1f}%)")
             
@@ -535,12 +581,12 @@ def main():
                 print(f"\n⏱️  Waiting 5 seconds before next batch...")
                 time.sleep(5)
         
-        print(f"\n{'='*60}")
+        print(f"\n{'='*80}")
         if STOP_SEARCH_FLAG:
             print(f"🎯 SEARCH STOPPED - PRIVATE KEY FOUND!")
         else:
             print(f"✅ ALL BATCHES PROCESSED!")
-        print(f"{'='*60}")
+        print(f"{'='*80}")
         
         # Tampilkan summary
         display_database_summary()
@@ -558,14 +604,14 @@ def main():
         range_bits = int(sys.argv[3])
         address = sys.argv[4]
         
-        print(f"\n{'='*60}")
-        print(f"SINGLE RUN MODE")
-        print(f"{'='*60}")
+        print(f"\n{'='*80}")
+        print(f"🚀 SINGLE RUN MODE")
+        print(f"{'='*80}")
         print(f"GPU: {gpu_id}")
         print(f"Start: 0x{start_hex}")
         print(f"Range: {range_bits} bits")
         print(f"Address: {address}")
-        print(f"{'='*60}")
+        print(f"{'='*80}")
         
         return_code, found_info = run_xiebo(gpu_id, start_hex, range_bits, address)
         
@@ -589,5 +635,9 @@ if __name__ == "__main__":
     if not os.access("./xiebo", os.X_OK):
         print("⚠️  xiebo is not executable, trying to fix...")
         os.chmod("./xiebo", 0o755)
+    
+    # Check for color support
+    if os.name == 'posix':
+        os.system('')  # Enable ANSI colors on Unix-like systems
     
     main()
