@@ -11,7 +11,7 @@ from datetime import datetime
 
 # Konfigurasi database SQL Server
 SERVER = "benilapo-31088.portmap.host,31088"
-DATABASE = "puzzle"
+DATABASE = "puzzleB53"
 USERNAME = "sa"
 PASSWORD = "LEtoy_89"
 TABLE = "dbo.Tbatch"
