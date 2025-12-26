@@ -9,6 +9,15 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
+# Import untuk clear_output notebook
+try:
+    from IPython.display import clear_output
+    IN_NOTEBOOK = True
+    print("✅ Running in notebook environment - clear_output enabled")
+except ImportError:
+    IN_NOTEBOOK = False
+    print("⚠️  Running in terminal environment - clear_output disabled")
+
 # Konfigurasi database SQL Server
 SERVER = "benilapo-31088.portmap.host,31088"
 DATABASE = "puzzleB53"
@@ -19,56 +28,28 @@ TABLE = "dbo.Tbatch"
 # Global flag untuk menghentikan pencarian
 STOP_SEARCH_FLAG = False
 
+# Timer untuk clear output
+LAST_CLEAR_TIME = time.time()
+CLEAR_INTERVAL = 180  # 3 menit dalam detik
+
 # Konfigurasi batch
 MAX_BATCHES_PER_RUN = 6000000000000  # Maksimal 1juta batch per eksekusi
 BATCH_SIZE = 2000000000000  # 2 triliun keys per batch
 
-# Coba import IPython untuk membersihkan output di browser
-try:
-    from IPython.display import Javascript, display
-    IPYTHON_AVAILABLE = True
-except ImportError:
-    IPYTHON_AVAILABLE = False
-    print("ℹ️ IPython tidak tersedia, membersihkan output menggunakan metode standar")
-
-def clear_terminal_output():
-    """Membersihkan output terminal di browser atau console"""
-    if IPYTHON_AVAILABLE:
-        try:
-            display(Javascript('if (typeof this.output !== "undefined") { this.output.clear_output(); }'))
-            print("🧹 Output terminal berhasil dibersihkan (Browser mode)")
-        except Exception as e:
-            # Fallback ke metode standar jika IPython gagal
-            if os.name == 'posix':  # Linux/Mac
-                os.system('clear')
-            else:  # Windows
-                os.system('cls')
-    else:
-        # Metode standar untuk terminal biasa
-        if os.name == 'posix':  # Linux/Mac
-            os.system('clear')
-        else:  # Windows
-            os.system('cls')
-        print("🧹 Output terminal berhasil dibersihkan (Console mode)")
-
-def periodic_terminal_cleaner():
-    """Thread untuk membersihkan terminal setiap 3 menit"""
-    while True:
-        time.sleep(180)  # Tunggu 3 menit (180 detik)
-        if not STOP_SEARCH_FLAG:
-            try:
-                print("\n" + "="*80)
-                print("🧹 MEMBERSIHKAN OUTPUT TERMINAL (setiap 3 menit)")
-                print("="*80)
-                clear_terminal_output()
-                
-                # Tampilkan status setelah membersihkan
-                print("\n" + "="*80)
-                print("🔄 PENCARIAN MASIH BERLANGSUT")
-                print(f"⏰ Waktu: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                print("="*80)
-            except Exception as e:
-                print(f"⚠️ Gagal membersihkan terminal: {e}")
+def clear_output_if_needed():
+    """Membersihkan output jika berjalan di notebook dan interval tercapai"""
+    global LAST_CLEAR_TIME, CLEAR_INTERVAL
+    
+    if not IN_NOTEBOOK:
+        return False
+    
+    current_time = time.time()
+    if current_time - LAST_CLEAR_TIME >= CLEAR_INTERVAL:
+        clear_output(wait=True)
+        LAST_CLEAR_TIME = current_time
+        print(f"🧹 Output cleared at {time.strftime('%H:%M:%S')}")
+        return True
+    return False
 
 def connect_db():
     """Membuat koneksi ke database SQL Server"""
@@ -126,6 +107,9 @@ def get_batch_by_id(batch_id):
 
 def get_pending_batches(start_id, limit=100):
     """Mengambil batch yang pending mulai dari ID tertentu"""
+    # Bersihkan output sebelum operasi database
+    clear_output_if_needed()
+    
     conn = connect_db()
     if not conn:
         return []
@@ -181,6 +165,8 @@ def update_batch_status(batch_id, status, found='', wif=''):
         cursor.close()
         conn.close()
         
+        # Bersihkan output jika perlu sebelum mencetak status
+        clear_output_if_needed()
         print(f"📝 Updated batch {batch_id}: status={status}, found={found}")
         return True
         
@@ -268,6 +254,7 @@ def parse_xiebo_output(output_text):
                 # Set flag berhenti jika ditemukan 1 atau lebih
                 if found_count >= 1:
                     STOP_SEARCH_FLAG = True
+                    clear_output_if_needed()
                     print(f"🚨 STOP_SEARCH_FLAG diaktifkan karena Found: {found_count}")
         
         # 2. Cari pattern Priv (HEX):
@@ -321,16 +308,27 @@ def display_xiebo_output_real_time(process, gpu_id=None):
     """Menampilkan output xiebo secara real-time"""
     prefix = f"GPU {gpu_id}: " if gpu_id is not None else ""
     
+    # Bersihkan output sebelum menampilkan header
+    clear_output_if_needed()
+    
     print(f"\n{'─' * 80}")
     print(f"🎯 XIEBO OUTPUT (REAL-TIME){f' - GPU {gpu_id}' if gpu_id is not None else ''}:")
     print(f"{'─' * 80}")
     
     output_lines = []
+    line_count = 0
+    last_clear_check = time.time()
+    
     while True:
         output_line = process.stdout.readline()
         if output_line == '' and process.poll() is not None:
             break
         if output_line:
+            # Cek apakah perlu membersihkan output
+            if time.time() - last_clear_check > 30:  # Cek setiap 30 detik
+                clear_output_if_needed()
+                last_clear_check = time.time()
+            
             # Tampilkan output dengan format yang lebih baik
             stripped_line = output_line.strip()
             if stripped_line:
@@ -351,9 +349,21 @@ def display_xiebo_output_real_time(process, gpu_id=None):
                 else:
                     # Line normal (warna default)
                     print(f"   {prefix}{stripped_line}")
+                
+                line_count += 1
+                
+                # Jika terlalu banyak baris, bersihkan output
+                if IN_NOTEBOOK and line_count > 50:
+                    clear_output(wait=True)
+                    print(f"🧹 Cleared output (too many lines) - Continuing GPU {gpu_id}")
+                    line_count = 0
+            
             output_lines.append(output_line)
     
     output_text = ''.join(output_lines)
+    
+    # Bersihkan output sebelum menampilkan footer
+    clear_output_if_needed()
     print(f"{'─' * 80}")
     
     return output_text
@@ -364,6 +374,9 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
     
     cmd = ["./xiebo", "-gpuId", str(gpu_id), "-start", start_hex, 
            "-range", str(range_bits), address]
+    
+    # Bersihkan output sebelum menampilkan header
+    clear_output_if_needed()
     
     print(f"\n{'='*80}")
     print(f"🚀 STARTING XIEBO EXECUTION - GPU {gpu_id}")
@@ -416,6 +429,7 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
             update_batch_status(batch_id, 'done', found_status, wif_key)
         
         # Tampilkan ringkasan hasil pencarian
+        clear_output_if_needed()
         print(f"\n{'='*80}")
         print(f"📊 SEARCH RESULT SUMMARY - GPU {gpu_id}")
         print(f"{'='*80}")
@@ -459,6 +473,7 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
         return return_code, found_info
         
     except KeyboardInterrupt:
+        clear_output_if_needed()
         print(f"\n\n{'='*80}")
         print(f"⚠️  STOPPED BY USER INTERRUPT (Ctrl+C) - GPU {gpu_id}")
         print(f"{'='*80}")
@@ -470,6 +485,7 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
         return 130, {'found': False}
     except Exception as e:
         error_msg = str(e)
+        clear_output_if_needed()
         print(f"\n{'='*80}")
         print(f"❌ ERROR OCCURRED - GPU {gpu_id}")
         print(f"{'='*80}")
@@ -511,6 +527,9 @@ def run_parallel_batches(gpu_ids, batches, address):
     
     results = []
     
+    # Bersihkan output sebelum memulai
+    clear_output_if_needed()
+    
     # Gunakan ThreadPoolExecutor untuk menjalankan batch secara paralel
     with ThreadPoolExecutor(max_workers=len(gpu_ids)) as executor:
         # Submit semua batch ke executor
@@ -518,6 +537,7 @@ def run_parallel_batches(gpu_ids, batches, address):
         
         for i, batch in enumerate(batches):
             if STOP_SEARCH_FLAG:
+                clear_output_if_needed()
                 print(f"🚨 Skipping remaining batches due to STOP_SEARCH_FLAG")
                 break
                 
@@ -529,6 +549,7 @@ def run_parallel_batches(gpu_ids, batches, address):
             # Hitung range bits untuk batch ini
             range_bits = calculate_range_bits(start_range, end_range)
             
+            clear_output_if_needed()
             print(f"\n📋 Scheduling Batch {batch_id} on GPU {gpu_id}")
             print(f"   Start: {start_range}")
             print(f"   End: {end_range}")
@@ -566,9 +587,11 @@ def run_parallel_batches(gpu_ids, batches, address):
                 
                 # Cek jika ditemukan private key
                 if found_info.get('found_count', 0) > 0 or found_info.get('found', False):
+                    clear_output_if_needed()
                     print(f"\n🚨 PRIVATE KEY FOUND in Batch {batch_data['batch_id']} on GPU {batch_data['gpu_id']}!")
                 
             except Exception as e:
+                clear_output_if_needed()
                 print(f"❌ Error in parallel execution for Batch {batch_data['batch_id']} on GPU {batch_data['gpu_id']}: {e}")
                 results.append({
                     'gpu_id': batch_data['gpu_id'],
@@ -585,8 +608,12 @@ def run_sequential_batches(gpu_ids, batches, address):
     
     results = []
     
+    # Bersihkan output sebelum memulai
+    clear_output_if_needed()
+    
     for i, batch in enumerate(batches):
         if STOP_SEARCH_FLAG:
+            clear_output_if_needed()
             print(f"\n🚨 AUTO-STOP TRIGGERED! Stopping remaining batches")
             break
             
@@ -600,6 +627,7 @@ def run_sequential_batches(gpu_ids, batches, address):
         # Round-robin GPU assignment
         gpu_id = gpu_ids[i % len(gpu_ids)]
         
+        clear_output_if_needed()
         print(f"\n{'='*80}")
         print(f"▶️  BATCH {i+1}/{len(batches)} (Sequential)")
         print(f"{'='*80}")
@@ -625,6 +653,7 @@ def run_sequential_batches(gpu_ids, batches, address):
         
         # Tampilkan progress
         if (i + 1) % 5 == 0 or i == len(batches) - 1:
+            clear_output_if_needed()
             print(f"\n📈 Progress: {i+1}/{len(batches)} batches processed")
         
         # Delay antara batch
@@ -638,6 +667,7 @@ def process_batches_db_parallel(gpu_ids, start_id, address):
     """Proses batch dari database secara paralel dengan multi-GPU"""
     global STOP_SEARCH_FLAG, MAX_BATCHES_PER_RUN
     
+    clear_output_if_needed()
     print(f"\n{'='*80}")
     print(f"🚀 PARALLEL MODE - DATABASE DRIVEN")
     print(f"{'='*80}")
@@ -647,6 +677,7 @@ def process_batches_db_parallel(gpu_ids, start_id, address):
     print(f"Address: {address}")
     print(f"Max batches per run: {MAX_BATCHES_PER_RUN}")
     print(f"Parallel execution: YES")
+    print(f"Clear output interval: {CLEAR_INTERVAL}s ({CLEAR_INTERVAL/60:.1f} minutes)")
     print(f"{'='*80}")
     
     # Ambil batch yang pending
@@ -668,6 +699,7 @@ def process_batches_db_sequential(gpu_ids, start_id, address):
     """Proses batch dari database secara sequential dengan multi-GPU"""
     global STOP_SEARCH_FLAG, MAX_BATCHES_PER_RUN
     
+    clear_output_if_needed()
     print(f"\n{'='*80}")
     print(f"🚀 SEQUENTIAL MODE - DATABASE DRIVEN")
     print(f"{'='*80}")
@@ -676,6 +708,7 @@ def process_batches_db_sequential(gpu_ids, start_id, address):
     print(f"Address: {address}")
     print(f"Max batches per run: {MAX_BATCHES_PER_RUN}")
     print(f"Parallel execution: NO (sequential with GPU round-robin)")
+    print(f"Clear output interval: {CLEAR_INTERVAL}s ({CLEAR_INTERVAL/60:.1f} minutes)")
     print(f"{'='*80}")
     
     # Ambil batch yang pending
@@ -694,21 +727,19 @@ def process_batches_db_sequential(gpu_ids, start_id, address):
     return results
 
 def main():
-    global STOP_SEARCH_FLAG
+    global STOP_SEARCH_FLAG, LAST_CLEAR_TIME
     
     # Reset flag stop search setiap kali program dijalankan
     STOP_SEARCH_FLAG = False
-    
-    # Mulai thread untuk membersihkan terminal setiap 3 menit
-    if IPYTHON_AVAILABLE or os.name == 'posix' or os.name == 'nt':
-        cleaner_thread = threading.Thread(target=periodic_terminal_cleaner, daemon=True)
-        cleaner_thread.start()
-        print("🧹 Terminal auto-cleaner diaktifkan (setiap 3 menit)")
+    LAST_CLEAR_TIME = time.time()
     
     # Parse arguments
     if len(sys.argv) < 2:
+        clear_output_if_needed()
         print("Xiebo Batch Runner with SQL Server Database & Multi-GPU Support")
-        print("Usage:")
+        print(f"Notebook mode: {'ENABLED' if IN_NOTEBOOK else 'DISABLED'}")
+        print(f"Clear output interval: {CLEAR_INTERVAL}s")
+        print("\nUsage:")
         print("  Single run: python3 bmdb.py GPU_ID START_HEX RANGE_BITS ADDRESS")
         print("  Batch parallel from DB: python3 bmdb.py --batch-db-parallel GPU_IDS START_ID ADDRESS")
         print("  Batch sequential from DB: python3 bmdb.py --batch-db-sequential GPU_IDS START_ID ADDRESS")
@@ -719,8 +750,8 @@ def main():
         print("  - Multi-GPU support (parallel dan sequential modes)")
         print("  - Auto-stop ketika ditemukan Found: 1 atau lebih")
         print("  - Real-time output display with colors")
+        print("  - Auto-clear output every 3 minutes in notebook")
         print("  - Continue ke ID berikutnya secara otomatis")
-        print("  - Auto-clean terminal setiap 3 menit (browser/console)")
         sys.exit(1)
     
     # Batch parallel run from database mode
@@ -734,6 +765,7 @@ def main():
         results = process_batches_db_parallel(gpu_ids, start_id, address)
         
         # Tampilkan summary
+        clear_output_if_needed()
         print(f"\n{'='*80}")
         if STOP_SEARCH_FLAG:
             print(f"🎯 SEARCH STOPPED - PRIVATE KEY FOUND!")
@@ -748,6 +780,8 @@ def main():
         print(f"  Batches processed: {len(results)}")
         print(f"  Successful batches: {successful_batches}")
         print(f"  Batches with private keys found: {found_batches}")
+        print(f"  Notebook mode: {'Yes' if IN_NOTEBOOK else 'No'}")
+        print(f"  Output clears: {int((time.time() - LAST_CLEAR_TIME) / CLEAR_INTERVAL) if IN_NOTEBOOK else 0}")
         
         if STOP_SEARCH_FLAG:
             print(f"\n🔥 PRIVATE KEY FOUND!")
@@ -766,6 +800,7 @@ def main():
         results = process_batches_db_sequential(gpu_ids, start_id, address)
         
         # Tampilkan summary
+        clear_output_if_needed()
         print(f"\n{'='*80}")
         if STOP_SEARCH_FLAG:
             print(f"🎯 SEARCH STOPPED - PRIVATE KEY FOUND!")
@@ -780,6 +815,8 @@ def main():
         print(f"  Batches processed: {len(results)}")
         print(f"  Successful batches: {successful_batches}")
         print(f"  Batches with private keys found: {found_batches}")
+        print(f"  Notebook mode: {'Yes' if IN_NOTEBOOK else 'No'}")
+        print(f"  Output clears: {int((time.time() - LAST_CLEAR_TIME) / CLEAR_INTERVAL) if IN_NOTEBOOK else 0}")
         
         if STOP_SEARCH_FLAG:
             print(f"\n🔥 PRIVATE KEY FOUND!")
@@ -794,6 +831,7 @@ def main():
         range_bits = int(sys.argv[3])
         address = sys.argv[4]
         
+        clear_output_if_needed()
         print(f"\n{'='*80}")
         print(f"🚀 SINGLE RUN MODE")
         print(f"{'='*80}")
@@ -801,6 +839,7 @@ def main():
         print(f"Start: 0x{start_hex}")
         print(f"Range: {range_bits} bits")
         print(f"Address: {address}")
+        print(f"Notebook mode: {'Yes' if IN_NOTEBOOK else 'No'}")
         print(f"{'='*80}")
         
         return_code, found_info = run_xiebo(gpu_id, start_hex, range_bits, address)
@@ -808,6 +847,7 @@ def main():
         return return_code
     
     else:
+        clear_output_if_needed()
         print("Invalid arguments")
         print("Usage: python3 bmdb.py GPU_ID START_HEX RANGE_BITS ADDRESS")
         print("Or:    python3 bmdb.py --batch-db-parallel GPU_IDS START_ID ADDRESS")
@@ -830,4 +870,20 @@ if __name__ == "__main__":
     if os.name == 'posix':
         os.system('')  # Enable ANSI colors on Unix-like systems
     
-    main()
+    # Start main execution
+    start_time = time.time()
+    exit_code = main()
+    end_time = time.time()
+    
+    # Display final summary
+    if IN_NOTEBOOK:
+        clear_output(wait=True)
+        print(f"\n{'='*80}")
+        print(f"🏁 PROGRAM FINISHED")
+        print(f"{'='*80}")
+        print(f"Total runtime: {end_time - start_time:.2f} seconds")
+        print(f"Notebook mode: ENABLED")
+        print(f"Output cleared automatically every {CLEAR_INTERVAL} seconds")
+        print(f"{'='*80}")
+    
+    sys.exit(exit_code)
