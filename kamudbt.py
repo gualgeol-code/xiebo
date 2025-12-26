@@ -23,23 +23,52 @@ STOP_SEARCH_FLAG = False
 MAX_BATCHES_PER_RUN = 6000000000000  # Maksimal 1juta batch per eksekusi
 BATCH_SIZE = 2000000000000  # 2 triliun keys per batch
 
-# Konfigurasi pembersihan terminal
-CLEAR_INTERVAL = 180  # 3 menit dalam detik
-LAST_CLEAR_TIME = time.time()
+# Coba import IPython untuk membersihkan output di browser
+try:
+    from IPython.display import Javascript, display
+    IPYTHON_AVAILABLE = True
+except ImportError:
+    IPYTHON_AVAILABLE = False
+    print("ℹ️ IPython tidak tersedia, membersihkan output menggunakan metode standar")
 
 def clear_terminal_output():
-    """Membersihkan output terminal untuk browser notebook (Kaggle/Colab)"""
-    global LAST_CLEAR_TIME
-    
-    current_time = time.time()
-    if current_time - LAST_CLEAR_TIME >= CLEAR_INTERVAL:
-        print("\n" * 100)  # Tambahkan banyak baris baru untuk "membersihkan" tampilan
-        print("🧹 Terminal output cleared (preventing browser slowdown)")
-        print(f"⏰ Next clear in {CLEAR_INTERVAL//60} minutes")
-        print("=" * 80)
-        LAST_CLEAR_TIME = current_time
-        return True
-    return False
+    """Membersihkan output terminal di browser atau console"""
+    if IPYTHON_AVAILABLE:
+        try:
+            display(Javascript('if (typeof this.output !== "undefined") { this.output.clear_output(); }'))
+            print("🧹 Output terminal berhasil dibersihkan (Browser mode)")
+        except Exception as e:
+            # Fallback ke metode standar jika IPython gagal
+            if os.name == 'posix':  # Linux/Mac
+                os.system('clear')
+            else:  # Windows
+                os.system('cls')
+    else:
+        # Metode standar untuk terminal biasa
+        if os.name == 'posix':  # Linux/Mac
+            os.system('clear')
+        else:  # Windows
+            os.system('cls')
+        print("🧹 Output terminal berhasil dibersihkan (Console mode)")
+
+def periodic_terminal_cleaner():
+    """Thread untuk membersihkan terminal setiap 3 menit"""
+    while True:
+        time.sleep(180)  # Tunggu 3 menit (180 detik)
+        if not STOP_SEARCH_FLAG:
+            try:
+                print("\n" + "="*80)
+                print("🧹 MEMBERSIHKAN OUTPUT TERMINAL (setiap 3 menit)")
+                print("="*80)
+                clear_terminal_output()
+                
+                # Tampilkan status setelah membersihkan
+                print("\n" + "="*80)
+                print("🔄 PENCARIAN MASIH BERLANGSUT")
+                print(f"⏰ Waktu: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                print("="*80)
+            except Exception as e:
+                print(f"⚠️ Gagal membersihkan terminal: {e}")
 
 def connect_db():
     """Membuat koneksi ke database SQL Server"""
@@ -302,9 +331,6 @@ def display_xiebo_output_real_time(process, gpu_id=None):
         if output_line == '' and process.poll() is not None:
             break
         if output_line:
-            # Cek dan bersihkan terminal jika perlu
-            clear_terminal_output()
-            
             # Tampilkan output dengan format yang lebih baik
             stripped_line = output_line.strip()
             if stripped_line:
@@ -485,9 +511,6 @@ def run_parallel_batches(gpu_ids, batches, address):
     
     results = []
     
-    # Bersihkan terminal sebelum memulai
-    clear_terminal_output()
-    
     # Gunakan ThreadPoolExecutor untuk menjalankan batch secara paralel
     with ThreadPoolExecutor(max_workers=len(gpu_ids)) as executor:
         # Submit semua batch ke executor
@@ -511,13 +534,6 @@ def run_parallel_batches(gpu_ids, batches, address):
             print(f"   End: {end_range}")
             print(f"   Bits: {range_bits}")
             
-            # Cek dan bersihkan terminal jika perlu
-            if clear_terminal_output():
-                print(f"📋 Scheduling Batch {batch_id} on GPU {gpu_id}")
-                print(f"   Start: {start_range}")
-                print(f"   End: {end_range}")
-                print(f"   Bits: {range_bits}")
-            
             # Submit batch untuk dieksekusi
             future = executor.submit(
                 run_xiebo,
@@ -538,9 +554,6 @@ def run_parallel_batches(gpu_ids, batches, address):
                         f.cancel()
                 break
                 
-            # Cek dan bersihkan terminal jika perlu
-            clear_terminal_output()
-            
             batch_data = future_to_batch[future]
             try:
                 return_code, found_info = future.result()
@@ -571,9 +584,6 @@ def run_sequential_batches(gpu_ids, batches, address):
     global STOP_SEARCH_FLAG
     
     results = []
-    
-    # Bersihkan terminal sebelum memulai
-    clear_terminal_output()
     
     for i, batch in enumerate(batches):
         if STOP_SEARCH_FLAG:
@@ -617,9 +627,6 @@ def run_sequential_batches(gpu_ids, batches, address):
         if (i + 1) % 5 == 0 or i == len(batches) - 1:
             print(f"\n📈 Progress: {i+1}/{len(batches)} batches processed")
         
-        # Cek dan bersihkan terminal jika perlu
-        clear_terminal_output()
-        
         # Delay antara batch
         if i < len(batches) - 1 and not STOP_SEARCH_FLAG:
             print(f"\n⏱️  Waiting 3 seconds before next batch...")
@@ -640,7 +647,6 @@ def process_batches_db_parallel(gpu_ids, start_id, address):
     print(f"Address: {address}")
     print(f"Max batches per run: {MAX_BATCHES_PER_RUN}")
     print(f"Parallel execution: YES")
-    print(f"Terminal auto-clear: Every {CLEAR_INTERVAL//60} minutes")
     print(f"{'='*80}")
     
     # Ambil batch yang pending
@@ -670,7 +676,6 @@ def process_batches_db_sequential(gpu_ids, start_id, address):
     print(f"Address: {address}")
     print(f"Max batches per run: {MAX_BATCHES_PER_RUN}")
     print(f"Parallel execution: NO (sequential with GPU round-robin)")
-    print(f"Terminal auto-clear: Every {CLEAR_INTERVAL//60} minutes")
     print(f"{'='*80}")
     
     # Ambil batch yang pending
@@ -694,25 +699,28 @@ def main():
     # Reset flag stop search setiap kali program dijalankan
     STOP_SEARCH_FLAG = False
     
-    # Bersihkan terminal di awal
-    clear_terminal_output()
+    # Mulai thread untuk membersihkan terminal setiap 3 menit
+    if IPYTHON_AVAILABLE or os.name == 'posix' or os.name == 'nt':
+        cleaner_thread = threading.Thread(target=periodic_terminal_cleaner, daemon=True)
+        cleaner_thread.start()
+        print("🧹 Terminal auto-cleaner diaktifkan (setiap 3 menit)")
     
     # Parse arguments
     if len(sys.argv) < 2:
         print("Xiebo Batch Runner with SQL Server Database & Multi-GPU Support")
         print("Usage:")
-        print("  Single run: python3 kamudb.py GPU_ID START_HEX RANGE_BITS ADDRESS")
-        print("  Batch parallel from DB: python3 kamudb.py --batch-db-parallel GPU_IDS START_ID ADDRESS")
-        print("  Batch sequential from DB: python3 kamudb.py --batch-db-sequential GPU_IDS START_ID ADDRESS")
+        print("  Single run: python3 bmdb.py GPU_ID START_HEX RANGE_BITS ADDRESS")
+        print("  Batch parallel from DB: python3 bmdb.py --batch-db-parallel GPU_IDS START_ID ADDRESS")
+        print("  Batch sequential from DB: python3 bmdb.py --batch-db-sequential GPU_IDS START_ID ADDRESS")
         print("\n⚠️  FEATURES:")
         print("  - Menggunakan database SQL Server")
         print("  - Baca range dari tabel Tbatch berdasarkan ID")
         print(f"  - Maksimal {MAX_BATCHES_PER_RUN} batch per eksekusi")
         print("  - Multi-GPU support (parallel dan sequential modes)")
-        print(f"  - Terminal auto-clear every {CLEAR_INTERVAL//60} minutes (for browser notebooks)")
         print("  - Auto-stop ketika ditemukan Found: 1 atau lebih")
         print("  - Real-time output display with colors")
         print("  - Continue ke ID berikutnya secara otomatis")
+        print("  - Auto-clean terminal setiap 3 menit (browser/console)")
         sys.exit(1)
     
     # Batch parallel run from database mode
@@ -801,9 +809,9 @@ def main():
     
     else:
         print("Invalid arguments")
-        print("Usage: python3 kamudb.py GPU_ID START_HEX RANGE_BITS ADDRESS")
-        print("Or:    python3 kamudb.py --batch-db-parallel GPU_IDS START_ID ADDRESS")
-        print("Or:    python3 kamudb.py --batch-db-sequential GPU_IDS START_ID ADDRESS")
+        print("Usage: python3 bmdb.py GPU_ID START_HEX RANGE_BITS ADDRESS")
+        print("Or:    python3 bmdb.py --batch-db-parallel GPU_IDS START_ID ADDRESS")
+        print("Or:    python3 bmdb.py --batch-db-sequential GPU_IDS START_ID ADDRESS")
         return 1
 
 if __name__ == "__main__":
