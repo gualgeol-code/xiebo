@@ -6,9 +6,9 @@ import math
 import re
 import pyodbc
 import threading
-from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from collections import deque
 
 # Konfigurasi database SQL Server
 SERVER = "benilapo-31088.portmap.host,31088"
@@ -272,14 +272,14 @@ def parse_xiebo_output(output_text):
     return found_info
 
 def display_xiebo_output_real_time(process, gpu_id=None):
-    """Menampilkan 100 baris terakhir dari output xiebo secara real-time"""
+    """Menampilkan output xiebo secara real-time (hanya 100 baris terakhir)"""
     prefix = f"GPU {gpu_id}: " if gpu_id is not None else ""
     
     print(f"\n{'─' * 80}")
-    print(f"🎯 XIEBO OUTPUT (LAST 100 LINES){f' - GPU {gpu_id}' if gpu_id is not None else ''}:")
+    print(f"🎯 XIEBO OUTPUT (REAL-TIME - LAST 100 LINES){f' - GPU {gpu_id}' if gpu_id is not None else ''}:")
     print(f"{'─' * 80}")
     
-    # Gunakan deque untuk menyimpan hanya 100 baris terakhir
+    # Gunakan deque untuk menyimpan 100 baris terakhir
     output_buffer = deque(maxlen=100)
     all_output_lines = []
     
@@ -290,37 +290,36 @@ def display_xiebo_output_real_time(process, gpu_id=None):
         if output_line:
             stripped_line = output_line.strip()
             if stripped_line:
-                # Simpan di buffer 100 baris terakhir
-                output_buffer.append(stripped_line)
-                # Simpan semua output untuk parsing nanti
                 all_output_lines.append(output_line)
+                output_buffer.append(stripped_line)
+                
+                # Clear screen and display last 100 lines
+                if os.name == 'posix':
+                    os.system('clear')
+                else:
+                    os.system('cls')
+                
+                print(f"\n{'─' * 80}")
+                print(f"🎯 XIEBO OUTPUT (REAL-TIME - LAST 100 LINES){f' - GPU {gpu_id}' if gpu_id is not None else ''}:")
+                print(f"{'─' * 80}")
+                
+                # Display last 100 lines with formatting
+                for line in output_buffer:
+                    line_lower = line.lower()
+                    if 'found:' in line_lower or 'success' in line_lower:
+                        print(f"\033[92m   {prefix}{line}\033[0m")
+                    elif 'error' in line_lower or 'failed' in line_lower:
+                        print(f"\033[91m   {prefix}{line}\033[0m")
+                    elif 'speed' in line_lower or 'key/s' in line_lower:
+                        print(f"\033[93m   {prefix}{line}\033[0m")
+                    elif 'range' in line_lower:
+                        print(f"\033[94m   {prefix}{line}\033[0m")
+                    else:
+                        print(f"   {prefix}{line}")
+                
+                print(f"{'─' * 80}")
+                print(f"📊 Displaying {len(output_buffer)} lines (max 100)")
     
-    # Tampilkan 100 baris terakhir dengan format warna
-    for stripped_line in output_buffer:
-        line_lower = stripped_line.lower()
-        if 'found:' in line_lower or 'success' in line_lower:
-            # Line dengan hasil ditemukan (warna hijau)
-            print(f"\033[92m   {prefix}{stripped_line}\033[0m")
-        elif 'error' in line_lower or 'failed' in line_lower:
-            # Line dengan error (warna merah)
-            print(f"\033[91m   {prefix}{stripped_line}\033[0m")
-        elif 'speed' in line_lower or 'key/s' in line_lower:
-            # Line dengan informasi speed (warna kuning)
-            print(f"\033[93m   {prefix}{stripped_line}\033[0m")
-        elif 'range' in line_lower:
-            # Line dengan informasi range (warna biru)
-            print(f"\033[94m   {prefix}{stripped_line}\033[0m")
-        else:
-            # Line normal (warna default)
-            print(f"   {prefix}{stripped_line}")
-    
-    # Tampilkan informasi jika ada lebih dari 100 baris
-    if len(all_output_lines) > 100:
-        print(f"\nℹ️  Showing last 100 lines of {len(all_output_lines)} total output lines")
-    
-    print(f"{'─' * 80}")
-    
-    # Kembalikan semua output untuk parsing
     output_text = ''.join(all_output_lines)
     return output_text
 
@@ -678,8 +677,7 @@ def main():
         print(f"  - Maksimal {MAX_BATCHES_PER_RUN} batch per eksekusi")
         print("  - Multi-GPU support (parallel dan sequential modes)")
         print("  - Auto-stop ketika ditemukan Found: 1 atau lebih")
-        print("  - Menampilkan hanya 100 baris terakhir dari output xiebo")
-        print("  - Real-time output display with colors")
+        print("  - Real-time output display with colors (LAST 100 LINES ONLY)")
         print("  - Continue ke ID berikutnya secara otomatis")
         sys.exit(1)
     
