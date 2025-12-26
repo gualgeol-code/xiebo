@@ -25,8 +25,8 @@ BATCH_COLUMNS = [
 ]
 
 # Konfigurasi batch - sebagai variabel module-level
-MAX_BATCHES_PER_RUN = 10          # Maksimal 1juta batch per eksekusi
-BATCH_SIZE = 100000000            # 6 triliun keys per batch (default)
+MAX_BATCHES_PER_RUN = 1000          # Maksimal 1juta batch per eksekusi
+BATCH_SIZE = 1000000000            # 6 triliun keys per batch (default)
 DEFAULT_ADDRESS = "N/A"                # Default address untuk batch generation
 MAX_THREADS = 24                       # Jumlah thread maksimal untuk parallel processing
 
