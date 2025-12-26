@@ -8,7 +8,6 @@ import pyodbc
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from collections import deque
 
 # Konfigurasi database SQL Server
 SERVER = "benilapo-31088.portmap.host,31088"
@@ -23,6 +22,24 @@ STOP_SEARCH_FLAG = False
 # Konfigurasi batch
 MAX_BATCHES_PER_RUN = 6000000000000  # Maksimal 1juta batch per eksekusi
 BATCH_SIZE = 2000000000000  # 2 triliun keys per batch
+
+# Konfigurasi pembersihan terminal
+CLEAR_INTERVAL = 180  # 3 menit dalam detik
+LAST_CLEAR_TIME = time.time()
+
+def clear_terminal_output():
+    """Membersihkan output terminal untuk browser notebook (Kaggle/Colab)"""
+    global LAST_CLEAR_TIME
+    
+    current_time = time.time()
+    if current_time - LAST_CLEAR_TIME >= CLEAR_INTERVAL:
+        print("\n" * 100)  # Tambahkan banyak baris baru untuk "membersihkan" tampilan
+        print("🧹 Terminal output cleared (preventing browser slowdown)")
+        print(f"⏰ Next clear in {CLEAR_INTERVAL//60} minutes")
+        print("=" * 80)
+        LAST_CLEAR_TIME = current_time
+        return True
+    return False
 
 def connect_db():
     """Membuat koneksi ke database SQL Server"""
@@ -272,55 +289,47 @@ def parse_xiebo_output(output_text):
     return found_info
 
 def display_xiebo_output_real_time(process, gpu_id=None):
-    """Menampilkan output xiebo secara real-time (hanya 100 baris terakhir)"""
+    """Menampilkan output xiebo secara real-time"""
     prefix = f"GPU {gpu_id}: " if gpu_id is not None else ""
     
     print(f"\n{'─' * 80}")
-    print(f"🎯 XIEBO OUTPUT (REAL-TIME - LAST 100 LINES){f' - GPU {gpu_id}' if gpu_id is not None else ''}:")
+    print(f"🎯 XIEBO OUTPUT (REAL-TIME){f' - GPU {gpu_id}' if gpu_id is not None else ''}:")
     print(f"{'─' * 80}")
     
-    # Gunakan deque untuk menyimpan 100 baris terakhir
-    output_buffer = deque(maxlen=100)
-    all_output_lines = []
-    
+    output_lines = []
     while True:
         output_line = process.stdout.readline()
         if output_line == '' and process.poll() is not None:
             break
         if output_line:
+            # Cek dan bersihkan terminal jika perlu
+            clear_terminal_output()
+            
+            # Tampilkan output dengan format yang lebih baik
             stripped_line = output_line.strip()
             if stripped_line:
-                all_output_lines.append(output_line)
-                output_buffer.append(stripped_line)
-                
-                # Clear screen and display last 100 lines
-                if os.name == 'posix':
-                    os.system('clear')
+                # Warna untuk output tertentu
+                line_lower = stripped_line.lower()
+                if 'found:' in line_lower or 'success' in line_lower:
+                    # Line dengan hasil ditemukan (warna hijau)
+                    print(f"\033[92m   {prefix}{stripped_line}\033[0m")
+                elif 'error' in line_lower or 'failed' in line_lower:
+                    # Line dengan error (warna merah)
+                    print(f"\033[91m   {prefix}{stripped_line}\033[0m")
+                elif 'speed' in line_lower or 'key/s' in line_lower:
+                    # Line dengan informasi speed (warna kuning)
+                    print(f"\033[93m   {prefix}{stripped_line}\033[0m")
+                elif 'range' in line_lower:
+                    # Line dengan informasi range (warna biru)
+                    print(f"\033[94m   {prefix}{stripped_line}\033[0m")
                 else:
-                    os.system('cls')
-                
-                print(f"\n{'─' * 80}")
-                print(f"🎯 XIEBO OUTPUT (REAL-TIME - LAST 100 LINES){f' - GPU {gpu_id}' if gpu_id is not None else ''}:")
-                print(f"{'─' * 80}")
-                
-                # Display last 100 lines with formatting
-                for line in output_buffer:
-                    line_lower = line.lower()
-                    if 'found:' in line_lower or 'success' in line_lower:
-                        print(f"\033[92m   {prefix}{line}\033[0m")
-                    elif 'error' in line_lower or 'failed' in line_lower:
-                        print(f"\033[91m   {prefix}{line}\033[0m")
-                    elif 'speed' in line_lower or 'key/s' in line_lower:
-                        print(f"\033[93m   {prefix}{line}\033[0m")
-                    elif 'range' in line_lower:
-                        print(f"\033[94m   {prefix}{line}\033[0m")
-                    else:
-                        print(f"   {prefix}{line}")
-                
-                print(f"{'─' * 80}")
-                print(f"📊 Displaying {len(output_buffer)} lines (max 100)")
+                    # Line normal (warna default)
+                    print(f"   {prefix}{stripped_line}")
+            output_lines.append(output_line)
     
-    output_text = ''.join(all_output_lines)
+    output_text = ''.join(output_lines)
+    print(f"{'─' * 80}")
+    
     return output_text
 
 def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
@@ -355,7 +364,7 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
             universal_newlines=True
         )
         
-        # Tampilkan output secara real-time (hanya 100 baris terakhir)
+        # Tampilkan output secara real-time
         output_text = display_xiebo_output_real_time(process, gpu_id)
         
         # Tunggu proses selesai
@@ -476,6 +485,9 @@ def run_parallel_batches(gpu_ids, batches, address):
     
     results = []
     
+    # Bersihkan terminal sebelum memulai
+    clear_terminal_output()
+    
     # Gunakan ThreadPoolExecutor untuk menjalankan batch secara paralel
     with ThreadPoolExecutor(max_workers=len(gpu_ids)) as executor:
         # Submit semua batch ke executor
@@ -499,6 +511,13 @@ def run_parallel_batches(gpu_ids, batches, address):
             print(f"   End: {end_range}")
             print(f"   Bits: {range_bits}")
             
+            # Cek dan bersihkan terminal jika perlu
+            if clear_terminal_output():
+                print(f"📋 Scheduling Batch {batch_id} on GPU {gpu_id}")
+                print(f"   Start: {start_range}")
+                print(f"   End: {end_range}")
+                print(f"   Bits: {range_bits}")
+            
             # Submit batch untuk dieksekusi
             future = executor.submit(
                 run_xiebo,
@@ -519,6 +538,9 @@ def run_parallel_batches(gpu_ids, batches, address):
                         f.cancel()
                 break
                 
+            # Cek dan bersihkan terminal jika perlu
+            clear_terminal_output()
+            
             batch_data = future_to_batch[future]
             try:
                 return_code, found_info = future.result()
@@ -549,6 +571,9 @@ def run_sequential_batches(gpu_ids, batches, address):
     global STOP_SEARCH_FLAG
     
     results = []
+    
+    # Bersihkan terminal sebelum memulai
+    clear_terminal_output()
     
     for i, batch in enumerate(batches):
         if STOP_SEARCH_FLAG:
@@ -592,6 +617,9 @@ def run_sequential_batches(gpu_ids, batches, address):
         if (i + 1) % 5 == 0 or i == len(batches) - 1:
             print(f"\n📈 Progress: {i+1}/{len(batches)} batches processed")
         
+        # Cek dan bersihkan terminal jika perlu
+        clear_terminal_output()
+        
         # Delay antara batch
         if i < len(batches) - 1 and not STOP_SEARCH_FLAG:
             print(f"\n⏱️  Waiting 3 seconds before next batch...")
@@ -612,6 +640,7 @@ def process_batches_db_parallel(gpu_ids, start_id, address):
     print(f"Address: {address}")
     print(f"Max batches per run: {MAX_BATCHES_PER_RUN}")
     print(f"Parallel execution: YES")
+    print(f"Terminal auto-clear: Every {CLEAR_INTERVAL//60} minutes")
     print(f"{'='*80}")
     
     # Ambil batch yang pending
@@ -641,6 +670,7 @@ def process_batches_db_sequential(gpu_ids, start_id, address):
     print(f"Address: {address}")
     print(f"Max batches per run: {MAX_BATCHES_PER_RUN}")
     print(f"Parallel execution: NO (sequential with GPU round-robin)")
+    print(f"Terminal auto-clear: Every {CLEAR_INTERVAL//60} minutes")
     print(f"{'='*80}")
     
     # Ambil batch yang pending
@@ -664,20 +694,24 @@ def main():
     # Reset flag stop search setiap kali program dijalankan
     STOP_SEARCH_FLAG = False
     
+    # Bersihkan terminal di awal
+    clear_terminal_output()
+    
     # Parse arguments
     if len(sys.argv) < 2:
         print("Xiebo Batch Runner with SQL Server Database & Multi-GPU Support")
         print("Usage:")
-        print("  Single run: python3 bmdb.py GPU_ID START_HEX RANGE_BITS ADDRESS")
-        print("  Batch parallel from DB: python3 bmdb.py --batch-db-parallel GPU_IDS START_ID ADDRESS")
-        print("  Batch sequential from DB: python3 bmdb.py --batch-db-sequential GPU_IDS START_ID ADDRESS")
+        print("  Single run: python3 kamudb.py GPU_ID START_HEX RANGE_BITS ADDRESS")
+        print("  Batch parallel from DB: python3 kamudb.py --batch-db-parallel GPU_IDS START_ID ADDRESS")
+        print("  Batch sequential from DB: python3 kamudb.py --batch-db-sequential GPU_IDS START_ID ADDRESS")
         print("\n⚠️  FEATURES:")
         print("  - Menggunakan database SQL Server")
         print("  - Baca range dari tabel Tbatch berdasarkan ID")
         print(f"  - Maksimal {MAX_BATCHES_PER_RUN} batch per eksekusi")
         print("  - Multi-GPU support (parallel dan sequential modes)")
+        print(f"  - Terminal auto-clear every {CLEAR_INTERVAL//60} minutes (for browser notebooks)")
         print("  - Auto-stop ketika ditemukan Found: 1 atau lebih")
-        print("  - Real-time output display with colors (LAST 100 LINES ONLY)")
+        print("  - Real-time output display with colors")
         print("  - Continue ke ID berikutnya secara otomatis")
         sys.exit(1)
     
@@ -767,9 +801,9 @@ def main():
     
     else:
         print("Invalid arguments")
-        print("Usage: python3 bmdb.py GPU_ID START_HEX RANGE_BITS ADDRESS")
-        print("Or:    python3 bmdb.py --batch-db-parallel GPU_IDS START_ID ADDRESS")
-        print("Or:    python3 bmdb.py --batch-db-sequential GPU_IDS START_ID ADDRESS")
+        print("Usage: python3 kamudb.py GPU_ID START_HEX RANGE_BITS ADDRESS")
+        print("Or:    python3 kamudb.py --batch-db-parallel GPU_IDS START_ID ADDRESS")
+        print("Or:    python3 kamudb.py --batch-db-sequential GPU_IDS START_ID ADDRESS")
         return 1
 
 if __name__ == "__main__":
