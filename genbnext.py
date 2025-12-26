@@ -56,32 +56,13 @@ def cleanup_threads():
 atexit.register(cleanup_threads)
 
 def get_next_batch_filename():
-    """Mendapatkan nama file batch berikutnya dengan penomoran - PERBAIKAN: cari index tertinggi yang ada"""
-    # Cari semua file batch yang ada
-    batch_files = []
-    for file in os.listdir('.'):
-        if file.startswith(LOG_FILE_PREFIX) and file.endswith(LOG_FILE_EXT):
-            batch_files.append(file)
-    
-    if not batch_files:
-        return f"{LOG_FILE_PREFIX}_001{LOG_FILE_EXT}", 1
-    
-    # Cari index tertinggi dari file yang ada
-    max_index = 1
-    for file in batch_files:
-        try:
-            # Format: generated_batches_001.txt
-            base_name = os.path.splitext(file)[0]  # generated_batches_001
-            index_str = base_name.split('_')[-1]   # 001
-            index = int(index_str)
-            if index > max_index:
-                max_index = index
-        except (ValueError, IndexError):
-            continue
-    
-    # Return nama file dengan index berikutnya
-    next_index = max_index + 1
-    return f"{LOG_FILE_PREFIX}_{next_index:03d}{LOG_FILE_EXT}", next_index
+    """Mendapatkan nama file batch berikutnya dengan penomoran"""
+    index = 1
+    while True:
+        filename = f"{LOG_FILE_PREFIX}_{index:03d}{LOG_FILE_EXT}"
+        if not os.path.exists(filename):
+            return filename, index
+        index += 1
 
 def get_current_batch_file():
     """Mendapatkan file batch yang sedang aktif (file dengan index tertinggi)"""
@@ -97,23 +78,9 @@ def get_current_batch_file():
         filename, index = get_next_batch_filename()
         return filename
     
-    # Cari file dengan index tertinggi
-    max_index = 0
-    latest_file = None
-    
-    for file in batch_files:
-        try:
-            # Format: generated_batches_001.txt
-            base_name = os.path.splitext(file)[0]  # generated_batches_001
-            index_str = base_name.split('_')[-1]   # 001
-            index = int(index_str)
-            if index > max_index:
-                max_index = index
-                latest_file = file
-        except (ValueError, IndexError):
-            continue
-    
-    return latest_file if latest_file else batch_files[-1]
+    # Urutkan berdasarkan index (generated_batches_001.txt, generated_batches_002.txt, dst)
+    batch_files.sort()
+    return batch_files[-1]  # File dengan index tertinggi
 
 def get_current_batch_index():
     """Mendapatkan index file batch saat ini"""
@@ -127,21 +94,20 @@ def get_current_batch_index():
     if not batch_files:
         return 1
     
-    # Cari index tertinggi
-    max_index = 0
+    # Urutkan berdasarkan index
+    batch_files.sort()
     
-    for file in batch_files:
-        try:
-            # Format: generated_batches_001.txt
-            base_name = os.path.splitext(file)[0]  # generated_batches_001
-            index_str = base_name.split('_')[-1]   # 001
-            index = int(index_str)
-            if index > max_index:
-                max_index = index
-        except (ValueError, IndexError):
-            continue
+    # Ambil file terakhir
+    last_file = batch_files[-1]
     
-    return max_index if max_index > 0 else 1
+    # Ekstrak index dari nama file
+    try:
+        # Format: generated_batches_001.txt
+        base_name = os.path.splitext(last_file)[0]  # generated_batches_001
+        index_str = base_name.split('_')[-1]        # 001
+        return int(index_str)
+    except (ValueError, IndexError):
+        return 1
 
 def get_latest_batch_file():
     """Mendapatkan file batch terbaru (dengan index tertinggi)"""
@@ -155,23 +121,9 @@ def get_latest_batch_file():
     if not batch_files:
         return None
     
-    # Cari index tertinggi
-    max_index = 0
-    latest_file = None
-    
-    for file in batch_files:
-        try:
-            # Format: generated_batches_001.txt
-            base_name = os.path.splitext(file)[0]  # generated_batches_001
-            index_str = base_name.split('_')[-1]   # 001
-            index = int(index_str)
-            if index > max_index:
-                max_index = index
-                latest_file = file
-        except (ValueError, IndexError):
-            continue
-    
-    return latest_file
+    # Urutkan berdasarkan index
+    batch_files.sort()
+    return batch_files[-1]  # File dengan index tertinggi
 
 def should_create_new_batch_file(current_file, new_batch_count):
     """Menentukan apakah perlu membuat file batch baru"""
@@ -308,22 +260,11 @@ def read_all_batches_as_dict():
     if not batch_files:
         return batch_dict
     
-    # Cari index tertinggi dulu untuk urutan yang benar
-    file_indices = {}
-    for file in batch_files:
-        try:
-            base_name = os.path.splitext(file)[0]
-            index_str = base_name.split('_')[-1]
-            index = int(index_str)
-            file_indices[file] = index
-        except:
-            file_indices[file] = 0
-    
     # Urutkan file batch berdasarkan index
-    sorted_files = sorted(batch_files, key=lambda x: file_indices.get(x, 0))
+    batch_files.sort()
     
     # Baca semua file batch
-    for batch_file in sorted_files:
+    for batch_file in batch_files:
         try:
             with open(batch_file, 'r') as f:
                 reader = csv.DictReader(f, delimiter='|')
@@ -449,17 +390,30 @@ def load_next_batch_info():
                     key, value = line.split('=', 1)
                     info[key] = value
         
-        # Set current batch file berdasarkan file yang ada di nextbatch.txt
-        if 'current_batch_file' in info:
-            saved_file = info['current_batch_file']
-            if os.path.exists(saved_file):
-                CURRENT_LOG_FILE = saved_file
-            else:
-                # Jika file yang disimpan tidak ada, cari file terbaru
-                latest_file = get_latest_batch_file()
-                if latest_file:
-                    CURRENT_LOG_FILE = latest_file
-                    safe_print(f"⚠️  Saved batch file '{saved_file}' not found. Using latest: {CURRENT_LOG_FILE}")
+        # Set current batch file berdasarkan current_batch_index jika ada
+        if 'current_batch_index' in info:
+            try:
+                batch_index = int(info['current_batch_index'])
+                expected_file = f"{LOG_FILE_PREFIX}_{batch_index:03d}{LOG_FILE_EXT}"
+                
+                # Jika file yang diharapkan ada, gunakan itu
+                if os.path.exists(expected_file):
+                    CURRENT_LOG_FILE = expected_file
+                else:
+                    # Coba gunakan file terbaru yang ada
+                    latest_file = get_latest_batch_file()
+                    if latest_file:
+                        CURRENT_LOG_FILE = latest_file
+                    else:
+                        # Buat file baru berdasarkan index
+                        CURRENT_LOG_FILE = expected_file
+            except (ValueError, KeyError) as e:
+                safe_print(f"⚠️ Error parsing current_batch_index: {e}")
+                # Fallback ke current_batch_file jika ada
+                if 'current_batch_file' in info:
+                    CURRENT_LOG_FILE = info['current_batch_file']
+        elif 'current_batch_file' in info:
+            CURRENT_LOG_FILE = info['current_batch_file']
         
         return info
     except Exception as e:
@@ -545,10 +499,6 @@ def generate_batches_multithreaded(start_hex, range_bits, address, batch_size, s
     
     if create_new_file:
         safe_print(f"🆕 Creating new batch file for this run...")
-        # Dapatkan file berikutnya
-        new_filename, new_index = get_next_batch_filename()
-        CURRENT_LOG_FILE = new_filename
-        safe_print(f"📁 New batch file: {CURRENT_LOG_FILE} (index: {new_index})")
     
     # Baca batch yang sudah ada (jika melanjutkan dan tidak membuat file baru)
     if start_batch_id > 0 and not create_new_file:
@@ -732,10 +682,6 @@ def generate_batches_single_thread(start_hex, range_bits, address, batch_size, s
     
     if create_new_file:
         safe_print(f"🆕 Creating new batch file for this run...")
-        # Dapatkan file berikutnya
-        new_filename, new_index = get_next_batch_filename()
-        CURRENT_LOG_FILE = new_filename
-        safe_print(f"📁 New batch file: {CURRENT_LOG_FILE} (index: {new_index})")
     
     # Baca batch yang sudah ada (jika melanjutkan dan tidak membuat file baru)
     if start_batch_id > 0 and not create_new_file:
@@ -821,24 +767,12 @@ def display_batch_summary():
         
         # Tampilkan daftar file batch dengan detail
         if batch_files:
-            # Sort files by index
-            file_indices = {}
-            for file in batch_files:
-                try:
-                    base_name = os.path.splitext(file)[0]
-                    index_str = base_name.split('_')[-1]
-                    index = int(index_str)
-                    file_indices[file] = index
-                except:
-                    file_indices[file] = 0
-            
-            sorted_files = sorted(batch_files, key=lambda x: file_indices.get(x, 0))
-            
-            safe_print(f"\n📁 Batch files (sorted by index):")
+            batch_files.sort()
+            safe_print(f"\n📁 Batch files:")
             total_file_size = 0
             total_file_batches = 0
             
-            for file in sorted_files:
+            for file in batch_files:
                 file_size = os.path.getsize(file)
                 total_file_size += file_size
                 
@@ -901,6 +835,12 @@ def continue_generation_auto(batch_size, max_batches=None):
     
     try:
         while True:
+            # Pemeriksaan awal: apakah ada file nextbatch.txt?
+            if not os.path.exists(NEXT_BATCH_FILE):
+                safe_print("❌ No nextbatch.txt file found. Cannot continue.")
+                safe_print("   Please run with --generate first or ensure nextbatch.txt exists.")
+                break
+            
             next_info = load_next_batch_info()
             if not next_info:
                 safe_print("✅ All batches have been generated!")
@@ -916,21 +856,27 @@ def continue_generation_auto(batch_size, max_batches=None):
             address = next_info['address']
             batches_generated = int(next_info['batches_generated'])
             total_batches = int(next_info['total_batches'])
-            current_file = next_info.get('current_batch_file', CURRENT_LOG_FILE)
+            current_batch_index = int(next_info.get('current_batch_index', 0))
             
-            # PERBAIKAN: Gunakan file dari nextbatch.txt, atau cari yang terbaru
-            if current_file and os.path.exists(current_file):
-                CURRENT_LOG_FILE = current_file
-            else:
-                # Cari file batch terbaru yang ada
-                latest_file = get_latest_batch_file()
-                if latest_file:
-                    CURRENT_LOG_FILE = latest_file
-                    safe_print(f"⚠️  Saved batch file '{current_file}' not found. Using latest: {CURRENT_LOG_FILE}")
+            # Set current file berdasarkan current_batch_index
+            if current_batch_index > 0:
+                expected_file = f"{LOG_FILE_PREFIX}_{current_batch_index:03d}{LOG_FILE_EXT}"
+                if os.path.exists(expected_file):
+                    CURRENT_LOG_FILE = expected_file
                 else:
-                    # Buat file baru jika tidak ada
-                    CURRENT_LOG_FILE, _ = get_next_batch_filename()
-                    safe_print(f"⚠️  No batch files found. Creating new: {CURRENT_LOG_FILE}")
+                    # Cari file batch terbaru
+                    latest_file = get_latest_batch_file()
+                    if latest_file:
+                        CURRENT_LOG_FILE = latest_file
+                        safe_print(f"⚠️ Expected file {expected_file} not found, using latest: {latest_file}")
+                    else:
+                        # Buat file baru berdasarkan index
+                        CURRENT_LOG_FILE = expected_file
+                        safe_print(f"📁 Creating new batch file: {CURRENT_LOG_FILE}")
+            else:
+                # Fallback ke current_batch_file jika ada
+                current_file = next_info.get('current_batch_file', CURRENT_LOG_FILE)
+                CURRENT_LOG_FILE = current_file
             
             safe_print(f"Resuming from saved state...")
             safe_print(f"Next start: 0x{start_hex}")
@@ -939,6 +885,7 @@ def continue_generation_auto(batch_size, max_batches=None):
             safe_print(f"Batches already generated: {batches_generated:,}")
             safe_print(f"Total batches needed: {total_batches:,}")
             safe_print(f"Current batch file: {CURRENT_LOG_FILE}")
+            safe_print(f"Current batch index: {current_batch_index}")
             safe_print(f"Timestamp: {next_info.get('timestamp', 'unknown')}")
             safe_print(f"Output format: {BATCH_COLUMNS}")
             safe_print(f"Threads: {MAX_THREADS}")
@@ -959,32 +906,6 @@ def continue_generation_auto(batch_size, max_batches=None):
             
             safe_print(f"\nGenerating {batches_to_generate:,} more batches")
             safe_print(f"{remaining_batches:,} batches remaining in total")
-            
-            # PERBAIKAN: Tentukan apakah perlu file baru sebelum generate
-            need_new_file = False
-            if CURRENT_LOG_FILE and os.path.exists(CURRENT_LOG_FILE):
-                # Cek ukuran dan jumlah batch di file saat ini
-                file_size = os.path.getsize(CURRENT_LOG_FILE)
-                if file_size > 9 * 1024 * 1024:  # >9MB (mendekati 10MB)
-                    need_new_file = True
-                    safe_print(f"📁 Current file {CURRENT_LOG_FILE} is large ({file_size:,} bytes). Will create new file.")
-                
-                # Juga cek jumlah batch di file saat ini
-                try:
-                    with open(CURRENT_LOG_FILE, 'r') as f:
-                        reader = csv.DictReader(f, delimiter='|')
-                        current_batch_count = sum(1 for _ in reader)
-                    if current_batch_count + batches_to_generate > 9900:  # Mendekati 10,000
-                        need_new_file = True
-                        safe_print(f"📁 Current file has {current_batch_count:,} batches. Will create new file for {batches_to_generate:,} more batches.")
-                except:
-                    pass
-            
-            # Jika perlu file baru, dapatkan nama file berikutnya
-            if need_new_file:
-                new_filename, new_index = get_next_batch_filename()
-                safe_print(f"🆕 Creating new batch file: {new_filename} (index: {new_index})")
-                CURRENT_LOG_FILE = new_filename
             
             # Generate batch menggunakan multithreading
             total_batches_needed, actual_generated, batch_dict = generate_batches_multithreaded(
@@ -1048,6 +969,12 @@ def continue_generation_single(batch_size, max_batches=None, use_multithread=Tru
     """Lanjutkan generate batch dari state yang tersimpan (single run)"""
     global CURRENT_LOG_FILE
     
+    # Pemeriksaan awal: apakah ada file nextbatch.txt?
+    if not os.path.exists(NEXT_BATCH_FILE):
+        safe_print("❌ No nextbatch.txt file found. Cannot continue.")
+        safe_print("   Please run with --generate first or ensure nextbatch.txt exists.")
+        sys.exit(1)
+    
     next_info = load_next_batch_info()
     if not next_info:
         safe_print("❌ No saved state found. Run with --generate first.")
@@ -1058,22 +985,33 @@ def continue_generation_single(batch_size, max_batches=None, use_multithread=Tru
     address = next_info['address']
     batches_generated = int(next_info['batches_generated'])
     total_batches = int(next_info['total_batches'])
-    current_file = next_info.get('current_batch_file', CURRENT_LOG_FILE)
+    current_batch_index = int(next_info.get('current_batch_index', 0))
     
-    # PERBAIKAN: Gunakan file dari nextbatch.txt, atau cari yang terbaru
-    if current_file and os.path.exists(current_file):
-        CURRENT_LOG_FILE = current_file
+    # Set current file berdasarkan current_batch_index
+    if current_batch_index > 0:
+        expected_file = f"{LOG_FILE_PREFIX}_{current_batch_index:03d}{LOG_FILE_EXT}"
+        if os.path.exists(expected_file):
+            CURRENT_LOG_FILE = expected_file
+        else:
+            # Cari file batch terbaru
+            latest_file = get_latest_batch_file()
+            if latest_file:
+                CURRENT_LOG_FILE = latest_file
+                safe_print(f"⚠️ Expected file {expected_file} not found, using latest: {latest_file}")
+            else:
+                # Buat file baru berdasarkan index
+                CURRENT_LOG_FILE = expected_file
+                safe_print(f"📁 Creating new batch file: {CURRENT_LOG_FILE}")
     else:
-        # Cari file batch terbaru yang ada
-        latest_file = get_latest_batch_file()
-        if latest_file:
-            CURRENT_LOG_FILE = latest_file
-            safe_print(f"⚠️  Saved batch file '{current_file}' not found. Using latest: {CURRENT_LOG_FILE}")
+        # Fallback ke current_batch_file jika ada
+        current_file = next_info.get('current_batch_file', CURRENT_LOG_FILE)
+        CURRENT_LOG_FILE = current_file
     
     safe_print(f"\n{'='*60}")
     safe_print(f"CONTINUE GENERATION (SINGLE RUN)")
     safe_print(f"{'='*60}")
     safe_print(f"Current batch file: {CURRENT_LOG_FILE}")
+    safe_print(f"Current batch index: {current_batch_index}")
     
     remaining_batches = total_batches - batches_generated
     batches_to_generate = min(remaining_batches, max_batches) if max_batches else remaining_batches
@@ -1152,18 +1090,7 @@ def display_file_info():
         safe_print("📭 No batch files found")
         return
     
-    # Sort files by index
-    file_indices = {}
-    for file in batch_files:
-        try:
-            base_name = os.path.splitext(file)[0]
-            index_str = base_name.split('_')[-1]
-            index = int(index_str)
-            file_indices[file] = index
-        except:
-            file_indices[file] = 0
-    
-    sorted_files = sorted(batch_files, key=lambda x: file_indices.get(x, 0))
+    batch_files.sort()
     
     safe_print(f"\n{'='*60}")
     safe_print(f"📁 BATCH FILES INFORMATION")
@@ -1172,7 +1099,7 @@ def display_file_info():
     total_size = 0
     total_batches = 0
     
-    for file in sorted_files:
+    for file in batch_files:
         try:
             file_size = os.path.getsize(file)
             total_size += file_size
@@ -1228,6 +1155,21 @@ def main():
     print(f"Smart Google Drive upload (only latest files)")
     print(f"🚀 MULTITHREADED with {MAX_THREADS} threads")
     print(f"🛡️  Thread-safe with proper cleanup")
+    print("="*60)
+    
+    # Pemeriksaan awal saat program dijalankan
+    if os.path.exists(NEXT_BATCH_FILE):
+        safe_print("📄 nextbatch.txt file found. Ready to continue from saved state.")
+        next_info = load_next_batch_info()
+        if next_info:
+            safe_print(f"   Current batch file: {next_info.get('current_batch_file', 'Unknown')}")
+            safe_print(f"   Current batch index: {next_info.get('current_batch_index', 'Unknown')}")
+            safe_print(f"   Progress: {next_info.get('batches_generated', '0')}/{next_info.get('total_batches', '0')}")
+            safe_print(f"   Use: python3 genb.py --continue (to auto-continue)")
+    else:
+        safe_print("📭 No nextbatch.txt file found. Ready for new generation.")
+        safe_print(f"   Use: python3 genb.py --generate START_HEX RANGE_BITS [ADDRESS]")
+    
     print("="*60)
     
     if len(sys.argv) < 2:
@@ -1315,65 +1257,31 @@ def main():
     
     # Continue mode (single run, single thread)
     elif sys.argv[1] == "--continue-single-st":
-        # Set current batch file berdasarkan state yang tersimpan
-        next_info = load_next_batch_info()
-        if next_info and 'current_batch_file' in next_info:
-            CURRENT_LOG_FILE = next_info['current_batch_file']
-            if not os.path.exists(CURRENT_LOG_FILE):
-                # Jika file tidak ada, cari yang terbaru
-                latest_file = get_latest_batch_file()
-                if latest_file:
-                    CURRENT_LOG_FILE = latest_file
-                    safe_print(f"⚠️  Saved file not found. Using latest: {CURRENT_LOG_FILE}")
-        else:
-            CURRENT_LOG_FILE = get_current_batch_file()
-        
-        safe_print(f"📁 Current batch file: {CURRENT_LOG_FILE}")
-        safe_print(f"⚠️  Using SINGLE THREAD mode")
+        # Set current batch file
+        CURRENT_LOG_FILE = get_current_batch_file()
+        print(f"📁 Current batch file: {CURRENT_LOG_FILE}")
+        print(f"⚠️  Using SINGLE THREAD mode")
         
         continue_generation_single(BATCH_SIZE, MAX_BATCHES_PER_RUN, use_multithread=False)
         sys.exit(0)
     
     # Continue mode (single run, multithreaded)
     elif sys.argv[1] == "--continue-single":
-        # Set current batch file berdasarkan state yang tersimpan
-        next_info = load_next_batch_info()
-        if next_info and 'current_batch_file' in next_info:
-            CURRENT_LOG_FILE = next_info['current_batch_file']
-            if not os.path.exists(CURRENT_LOG_FILE):
-                # Jika file tidak ada, cari yang terbaru
-                latest_file = get_latest_batch_file()
-                if latest_file:
-                    CURRENT_LOG_FILE = latest_file
-                    safe_print(f"⚠️  Saved file not found. Using latest: {CURRENT_LOG_FILE}")
-        else:
-            CURRENT_LOG_FILE = get_current_batch_file()
-        
-        safe_print(f"📁 Current batch file: {CURRENT_LOG_FILE}")
-        safe_print(f"🚀 Using MULTITHREADED mode with {MAX_THREADS} threads")
+        # Set current batch file
+        CURRENT_LOG_FILE = get_current_batch_file()
+        print(f"📁 Current batch file: {CURRENT_LOG_FILE}")
+        print(f"🚀 Using MULTITHREADED mode with {MAX_THREADS} threads")
         
         continue_generation_single(BATCH_SIZE, MAX_BATCHES_PER_RUN, use_multithread=True)
         sys.exit(0)
     
     # Continue mode (auto - until completion, NO CONFIRMATION)
     elif sys.argv[1] == "--continue":
-        # Set current batch file berdasarkan state yang tersimpan
-        next_info = load_next_batch_info()
-        if next_info and 'current_batch_file' in next_info:
-            CURRENT_LOG_FILE = next_info['current_batch_file']
-            if not os.path.exists(CURRENT_LOG_FILE):
-                # Jika file tidak ada, cari yang terbaru
-                latest_file = get_latest_batch_file()
-                if latest_file:
-                    CURRENT_LOG_FILE = latest_file
-                    safe_print(f"⚠️  Saved file not found. Using latest: {CURRENT_LOG_FILE}")
-        else:
-            CURRENT_LOG_FILE = get_current_batch_file()
-        
-        safe_print(f"📁 Starting with batch file: {CURRENT_LOG_FILE}")
-        safe_print(f"🚀 Using MULTITHREADED mode with {MAX_THREADS} threads")
-        safe_print(f"⚠️  WARNING: Auto-continue mode activated. Process will run until completion WITHOUT confirmation.")
-        safe_print(f"   Press Ctrl+C to stop at any time.\n")
+        CURRENT_LOG_FILE = get_current_batch_file()
+        print(f"📁 Starting with batch file: {CURRENT_LOG_FILE}")
+        print(f"🚀 Using MULTITHREADED mode with {MAX_THREADS} threads")
+        print(f"⚠️  WARNING: Auto-continue mode activated. Process will run until completion WITHOUT confirmation.")
+        print(f"   Press Ctrl+C to stop at any time.\n")
         
         try:
             continue_generation_auto(BATCH_SIZE, MAX_BATCHES_PER_RUN)
