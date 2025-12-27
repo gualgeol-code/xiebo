@@ -6,8 +6,8 @@ import math
 import re
 import pyodbc
 import threading
+import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
 
 # Konfigurasi database SQL Server
 SERVER = "benilapo-31088.portmap.host,31088"
@@ -17,11 +17,10 @@ PASSWORD = "LEtoy_89"
 TABLE = "dbo.Tbatch"
 
 # Global flag untuk menghentikan pencarian
-STOP_SEARCH_FLAG = True
+STOP_SEARCH_FLAG = False
 
 # Konfigurasi batch
-MAX_BATCHES_PER_RUN = 10  # Maksimal 1juta batch per eksekusi
-BATCH_SIZE = 4000000000000  # 2 triliun keys per batch
+MAX_BATCHES_PER_RUN = 4000000000000  # Maksimal 1juta batch per eksekusi
 
 def connect_db():
     """Membuat koneksi ke database SQL Server"""
@@ -76,43 +75,6 @@ def get_batch_by_id(batch_id):
         if conn:
             conn.close()
         return None
-
-def get_pending_batches(start_id, limit=100):
-    """Mengambil batch yang pending mulai dari ID tertentu"""
-    conn = connect_db()
-    if not conn:
-        return []
-    
-    try:
-        cursor = conn.cursor()
-        
-        # Ambil batch dengan status bukan 'done' atau 'inprogress'
-        cursor.execute(f"""
-            SELECT id, start_range, end_range, status, found, wif
-            FROM {TABLE} 
-            WHERE id >= ? AND status NOT IN ('done', 'inprogress')
-            ORDER BY id
-            OFFSET 0 ROWS FETCH NEXT ? ROWS ONLY
-        """, (start_id, limit))
-        
-        rows = cursor.fetchall()
-        batches = []
-        
-        if rows:
-            columns = [column[0] for column in cursor.description]
-            for row in rows:
-                batches.append(dict(zip(columns, row)))
-        
-        cursor.close()
-        conn.close()
-        
-        return batches
-        
-    except Exception as e:
-        print(f"❌ Error getting pending batches: {e}")
-        if conn:
-            conn.close()
-        return []
 
 def update_batch_status(batch_id, status, found='', wif=''):
     """Update status batch di database"""
@@ -169,21 +131,6 @@ def calculate_range_bits(start_hex, end_hex):
     except Exception as e:
         print(f"❌ Error calculating range bits: {e}")
         return 64  # Default value
-
-def calculate_range_bits_from_count(keys_count):
-    """Fungsi baru: Menghitung range bits yang benar untuk jumlah keys tertentu"""
-    if keys_count <= 1:
-        return 1
-    
-    # Hitung log2 dari jumlah keys
-    log2_val = math.log2(keys_count)
-    
-    # Jika hasil log2 adalah bilangan bulat, gunakan nilai tersebut
-    # Jika tidak, gunakan floor + 1 (untuk mencakup semua keys)
-    if log2_val.is_integer():
-        return int(log2_val)
-    else:
-        return int(math.floor(log2_val)) + 1
 
 def parse_xiebo_output(output_text):
     """Parse output dari xiebo untuk mencari private key yang ditemukan"""
@@ -270,13 +217,11 @@ def parse_xiebo_output(output_text):
     
     return found_info
 
-def display_xiebo_output_real_time(process, gpu_id=None):
-    """Menampilkan output xiebo secara real-time"""
-    prefix = f"GPU {gpu_id}: " if gpu_id is not None else ""
-    
-    print(f"\n{'─' * 80}")
-    print(f"🎯 XIEBO OUTPUT (REAL-TIME){f' - GPU {gpu_id}' if gpu_id is not None else ''}:")
-    print(f"{'─' * 80}")
+def display_xiebo_output_real_time(process, gpu_id):
+    """Menampilkan output xiebo secara real-time dengan label GPU"""
+    print(f"\n\033[94m╔{'═'*78}╗\033[0m")
+    print(f"\033[94m║ 🎯 XIEBO OUTPUT GPU-{gpu_id} (REAL-TIME):\033[0m")
+    print(f"\033[94m╚{'═'*78}╝\033[0m")
     
     output_lines = []
     while True:
@@ -291,39 +236,43 @@ def display_xiebo_output_real_time(process, gpu_id=None):
                 line_lower = stripped_line.lower()
                 if 'found:' in line_lower or 'success' in line_lower:
                     # Line dengan hasil ditemukan (warna hijau)
-                    print(f"\033[92m   {prefix}{stripped_line}\033[0m")
+                    print(f"\033[92m   [GPU-{gpu_id}] {stripped_line}\033[0m")
                 elif 'error' in line_lower or 'failed' in line_lower:
                     # Line dengan error (warna merah)
-                    print(f"\033[91m   {prefix}{stripped_line}\033[0m")
+                    print(f"\033[91m   [GPU-{gpu_id}] {stripped_line}\033[0m")
                 elif 'speed' in line_lower or 'key/s' in line_lower:
                     # Line dengan informasi speed (warna kuning)
-                    print(f"\033[93m   {prefix}{stripped_line}\033[0m")
+                    print(f"\033[93m   [GPU-{gpu_id}] {stripped_line}\033[0m")
                 elif 'range' in line_lower:
                     # Line dengan informasi range (warna biru)
-                    print(f"\033[94m   {prefix}{stripped_line}\033[0m")
+                    print(f"\033[94m   [GPU-{gpu_id}] {stripped_line}\033[0m")
                 else:
                     # Line normal (warna default)
-                    print(f"   {prefix}{stripped_line}")
+                    print(f"   [GPU-{gpu_id}] {stripped_line}")
             output_lines.append(output_line)
     
     output_text = ''.join(output_lines)
-    print(f"{'─' * 80}")
+    print(f"\033[94m╔{'═'*78}╗\033[0m")
+    print(f"\033[94m║ 🎯 END OF GPU-{gpu_id} OUTPUT\033[0m")
+    print(f"\033[94m╚{'═'*78}╝\033[0m")
     
     return output_text
 
 def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
-    """Run xiebo binary untuk single GPU dengan batch tertentu"""
+    """Run xiebo binary langsung dan tampilkan outputnya secara real-time"""
     global STOP_SEARCH_FLAG
     
     cmd = ["./xiebo", "-gpuId", str(gpu_id), "-start", start_hex, 
            "-range", str(range_bits), address]
     
-    print(f"\n{'='*80}")
-    print(f"🚀 STARTING XIEBO EXECUTION - GPU {gpu_id}")
-    print(f"{'='*80}")
+    print(f"\n\033[93m╔{'═'*78}╗\033[0m")
+    print(f"\033[93m║ 🚀 STARTING XIEBO EXECUTION GPU-{gpu_id}\033[0m")
+    print(f"\033[93m╚{'═'*78}╝\033[0m")
     print(f"Command: {' '.join(cmd)}")
     print(f"Batch ID: {batch_id if batch_id is not None else 'N/A'}")
-    print(f"{'='*80}")
+    print(f"GPU ID: {gpu_id}")
+    print(f"Start Hex: {start_hex}")
+    print(f"Range Bits: {range_bits}")
     
     try:
         # Update status menjadi inprogress jika ada batch_id
@@ -331,7 +280,7 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
             update_batch_status(batch_id, 'inprogress')
         
         # Jalankan xiebo dan tampilkan output secara real-time
-        print(f"\n⏳ Launching xiebo process for GPU {gpu_id}...")
+        print(f"\n⏳ Launching xiebo process for GPU-{gpu_id}...")
         
         # Gunakan Popen untuk mendapatkan output real-time
         process = subprocess.Popen(
@@ -369,52 +318,50 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
             update_batch_status(batch_id, 'done', found_status, wif_key)
         
         # Tampilkan ringkasan hasil pencarian
-        print(f"\n{'='*80}")
-        print(f"📊 SEARCH RESULT SUMMARY - GPU {gpu_id}")
-        print(f"{'='*80}")
+        print(f"\n\033[93m╔{'═'*78}╗\033[0m")
+        print(f"\033[93m║ 📊 SEARCH RESULT SUMMARY GPU-{gpu_id}\033[0m")
+        print(f"\033[93m╚{'═'*78}╝\033[0m")
         
         if found_info['found_count'] > 0:
-            print(f"\033[92m✅ FOUND: {found_info['found_count']} PRIVATE KEY(S)!\033[0m")
+            print(f"\033[92m✅ GPU-{gpu_id} FOUND: {found_info['found_count']} PRIVATE KEY(S)!\033[0m")
         elif found_info['found']:
-            print(f"\033[92m✅ PRIVATE KEY FOUND!\033[0m")
+            print(f"\033[92m✅ GPU-{gpu_id} PRIVATE KEY FOUND!\033[0m")
         else:
-            print(f"\033[93m❌ Private key not found in this batch\033[0m")
+            print(f"\033[93m❌ GPU-{gpu_id}: Private key not found in this batch\033[0m")
         
         if found_info['speed_info']:
-            print(f"\n📈 Performance: {found_info['speed_info']}")
+            print(f"\n📈 GPU-{gpu_id} Performance: {found_info['speed_info']}")
         
         if found_info['found'] or found_info['found_count'] > 0:
-            print(f"\n📋 Found information:")
+            print(f"\n📋 GPU-{gpu_id} Found information:")
             if found_info['raw_output']:
                 for line in found_info['raw_output'].split('\n'):
                     if 'found:' in line.lower() or 'priv' in line.lower():
-                        print(f"\033[92m   {line}\033[0m")
+                        print(f"\033[92m   [GPU-{gpu_id}] {line}\033[0m")
                     else:
-                        print(f"   {line}")
+                        print(f"   [GPU-{gpu_id}] {line}")
             else:
                 if found_info['private_key_hex']:
-                    print(f"   Priv (HEX): \033[92m{found_info['private_key_hex']}\033[0m")
+                    print(f"   [GPU-{gpu_id}] Priv (HEX): \033[92m{found_info['private_key_hex']}\033[0m")
                 if found_info['private_key_wif']:
-                    print(f"   Priv (WIF): \033[92m{found_info['private_key_wif']}\033[0m")
+                    print(f"   [GPU-{gpu_id}] Priv (WIF): \033[92m{found_info['private_key_wif']}\033[0m")
                 if found_info['address']:
-                    print(f"   Address: \033[92m{found_info['address']}\033[0m")
+                    print(f"   [GPU-{gpu_id}] Address: \033[92m{found_info['address']}\033[0m")
                 if found_info['wif_key']:
-                    print(f"   WIF Key (first 60 chars): \033[92m{found_info['wif_key']}\033[0m")
-        
-        print(f"{'='*80}")
+                    print(f"   [GPU-{gpu_id}] WIF Key (first 60 chars): \033[92m{found_info['wif_key']}\033[0m")
         
         # Tampilkan return code
         if return_code == 0:
-            print(f"\n🟢 Process completed successfully (return code: {return_code})")
+            print(f"\n🟢 GPU-{gpu_id} process completed successfully (return code: {return_code})")
         else:
-            print(f"\n🟡 Process completed with return code: {return_code}")
+            print(f"\n🟡 GPU-{gpu_id} process completed with return code: {return_code}")
         
         return return_code, found_info
         
     except KeyboardInterrupt:
-        print(f"\n\n{'='*80}")
-        print(f"⚠️  STOPPED BY USER INTERRUPT (Ctrl+C) - GPU {gpu_id}")
-        print(f"{'='*80}")
+        print(f"\n\n\033[91m╔{'═'*78}╗\033[0m")
+        print(f"\033[91m║ ⚠️  GPU-{gpu_id} STOPPED BY USER INTERRUPT (Ctrl+C)\033[0m")
+        print(f"\033[91m╚{'═'*78}╝\033[0m")
         
         # Update status jika batch diinterupsi
         if batch_id is not None:
@@ -423,11 +370,10 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
         return 130, {'found': False}
     except Exception as e:
         error_msg = str(e)
-        print(f"\n{'='*80}")
-        print(f"❌ ERROR OCCURRED - GPU {gpu_id}")
-        print(f"{'='*80}")
+        print(f"\n\033[91m╔{'═'*78}╗\033[0m")
+        print(f"\033[91m║ ❌ GPU-{gpu_id} ERROR OCCURRED\033[0m")
+        print(f"\033[91m╚{'═'*78}╝\033[0m")
         print(f"Error: {error_msg}")
-        print(f"{'='*80}")
         
         # Update status error jika ada batch_id
         if batch_id is not None:
@@ -435,216 +381,94 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
         
         return 1, {'found': False}
 
-def parse_gpu_ids(gpu_str):
-    """Parse string GPU IDs menjadi list of integers"""
-    if not gpu_str:
-        return [0]
-    
-    gpu_ids = []
-    parts = gpu_str.split()
-    for part in parts:
-        try:
-            gpu_ids.append(int(part))
-        except ValueError:
-            # Jika ada karakter non-numerik, anggap sebagai single GPU
-            continue
-    
-    # Jika tidak ada GPU ID yang valid, gunakan default
-    if not gpu_ids:
-        gpu_ids = [0]
-    
-    # Urutkan dan hapus duplikat
-    gpu_ids = sorted(list(set(gpu_ids)))
-    
-    return gpu_ids
-
-def run_parallel_batches(gpu_ids, batches, address):
-    """Menjalankan multiple batch secara paralel di GPU yang berbeda"""
+def process_gpu_batch(gpu_config):
+    """Fungsi untuk memproses batch pada GPU tertentu"""
     global STOP_SEARCH_FLAG
     
-    results = []
+    gpu_id = gpu_config['gpu_id']
+    start_id = gpu_config['start_id']
+    address = gpu_config['address']
+    max_batches = gpu_config.get('max_batches', MAX_BATCHES_PER_RUN)
     
-    # Gunakan ThreadPoolExecutor untuk menjalankan batch secara paralel
-    with ThreadPoolExecutor(max_workers=len(gpu_ids)) as executor:
-        # Submit semua batch ke executor
-        future_to_batch = {}
+    current_id = start_id
+    batches_processed = 0
+    
+    print(f"\n\033[96m╔{'═'*78}╗\033[0m")
+    print(f"\033[96m║ 🚀 STARTING GPU-{gpu_id} BATCH PROCESSING\033[0m")
+    print(f"\033[96m╚{'═'*78}╝\033[0m")
+    print(f"GPU: {gpu_id}")
+    print(f"Start ID: {start_id}")
+    print(f"Address: {address}")
+    print(f"Max batches: {max_batches}")
+    
+    # Loop untuk memproses batch secara berurutan
+    while batches_processed < max_batches and not STOP_SEARCH_FLAG:
+        print(f"\n📋 GPU-{gpu_id} processing batch ID: {current_id}")
         
-        for i, batch in enumerate(batches):
-            if STOP_SEARCH_FLAG:
-                print(f"🚨 Skipping remaining batches due to STOP_SEARCH_FLAG")
-                break
-                
-            gpu_id = gpu_ids[i % len(gpu_ids)]  # Round-robin assignment
-            batch_id = batch['id']
-            start_range = batch['start_range']
-            end_range = batch['end_range']
-            
-            # Hitung range bits untuk batch ini
-            range_bits = calculate_range_bits(start_range, end_range)
-            
-            print(f"\n📋 Scheduling Batch {batch_id} on GPU {gpu_id}")
-            print(f"   Start: {start_range}")
-            print(f"   End: {end_range}")
-            print(f"   Bits: {range_bits}")
-            
-            # Submit batch untuk dieksekusi
-            future = executor.submit(
-                run_xiebo,
-                gpu_id, start_range, range_bits, address, batch_id
-            )
-            future_to_batch[future] = {
-                'gpu_id': gpu_id,
-                'batch_id': batch_id,
-                'batch': batch
-            }
+        # Ambil data batch berdasarkan ID
+        batch = get_batch_by_id(current_id)
         
-        # Tunggu dan kumpulkan hasil
-        for future in as_completed(future_to_batch):
-            if STOP_SEARCH_FLAG:
-                # Batalkan semua future yang belum selesai
-                for f in future_to_batch.keys():
-                    if not f.done():
-                        f.cancel()
-                break
-                
-            batch_data = future_to_batch[future]
-            try:
-                return_code, found_info = future.result()
-                results.append({
-                    'gpu_id': batch_data['gpu_id'],
-                    'batch_id': batch_data['batch_id'],
-                    'return_code': return_code,
-                    'found_info': found_info
-                })
-                
-                # Cek jika ditemukan private key
-                if found_info.get('found_count', 0) > 0 or found_info.get('found', False):
-                    print(f"\n🚨 PRIVATE KEY FOUND in Batch {batch_data['batch_id']} on GPU {batch_data['gpu_id']}!")
-                
-            except Exception as e:
-                print(f"❌ Error in parallel execution for Batch {batch_data['batch_id']} on GPU {batch_data['gpu_id']}: {e}")
-                results.append({
-                    'gpu_id': batch_data['gpu_id'],
-                    'batch_id': batch_data['batch_id'],
-                    'return_code': 1,
-                    'found_info': {'found': False, 'error': str(e)}
-                })
-    
-    return results
-
-def run_sequential_batches(gpu_ids, batches, address):
-    """Menjalankan batch secara sequential dengan round-robin GPU assignment"""
-    global STOP_SEARCH_FLAG
-    
-    results = []
-    
-    for i, batch in enumerate(batches):
-        if STOP_SEARCH_FLAG:
-            print(f"\n🚨 AUTO-STOP TRIGGERED! Stopping remaining batches")
+        if not batch:
+            print(f"❌ GPU-{gpu_id}: Batch ID {current_id} not found in database. Stopping.")
             break
-            
-        batch_id = batch['id']
+        
+        # Cek status batch
+        status = batch.get('status', '').strip()
+        
+        if status == 'done':
+            print(f"⏭️  GPU-{gpu_id}: Batch ID {current_id} already done. Skipping to next ID.")
+            current_id += 1
+            continue
+        
+        if status == 'inprogress':
+            print(f"⏭️  GPU-{gpu_id}: Batch ID {current_id} is in progress. Skipping to next ID.")
+            current_id += 1
+            continue
+        
+        # Ambil data range
         start_range = batch['start_range']
         end_range = batch['end_range']
         
-        # Hitung range bits untuk batch ini
+        # Hitung range bits
         range_bits = calculate_range_bits(start_range, end_range)
         
-        # Round-robin GPU assignment
-        gpu_id = gpu_ids[i % len(gpu_ids)]
-        
-        print(f"\n{'='*80}")
-        print(f"▶️  BATCH {i+1}/{len(batches)} (Sequential)")
-        print(f"{'='*80}")
+        # Run batch
+        print(f"\n\033[96m╔{'═'*78}╗\033[0m")
+        print(f"\033[96m║ ▶️  GPU-{gpu_id} BATCH {batches_processed + 1} (ID: {current_id})\033[0m")
+        print(f"\033[96m╚{'═'*78}╝\033[0m")
         print(f"GPU: {gpu_id}")
-        print(f"Batch ID: {batch_id}")
-        print(f"Start: {start_range}")
-        print(f"End: {end_range}")
-        print(f"Bits: {range_bits}")
+        print(f"Start Range: {start_range}")
+        print(f"End Range: {end_range}")
+        print(f"Range Bits: {range_bits}")
+        print(f"Address: {address}")
         
-        return_code, found_info = run_xiebo(gpu_id, start_range, range_bits, address, batch_id=batch_id)
-        
-        results.append({
-            'gpu_id': gpu_id,
-            'batch_id': batch_id,
-            'return_code': return_code,
-            'found_info': found_info
-        })
+        return_code, found_info = run_xiebo(gpu_id, start_range, range_bits, address, batch_id=current_id)
         
         if return_code == 0:
-            print(f"✅ Batch {batch_id} completed successfully")
+            print(f"\n✅ GPU-{gpu_id}: Batch ID {current_id} completed successfully")
         else:
-            print(f"⚠️  Batch {batch_id} exited with code {return_code}")
+            print(f"\n⚠️  GPU-{gpu_id}: Batch ID {current_id} exited with code {return_code}")
+        
+        # Increment counters
+        batches_processed += 1
+        current_id += 1
         
         # Tampilkan progress
-        if (i + 1) % 5 == 0 or i == len(batches) - 1:
-            print(f"\n📈 Progress: {i+1}/{len(batches)} batches processed")
+        if batches_processed % 3 == 0 or STOP_SEARCH_FLAG:
+            print(f"\n📈 GPU-{gpu_id} Progress: {batches_processed} batches processed, current ID: {current_id}")
         
-        # Delay antara batch
-        if i < len(batches) - 1 and not STOP_SEARCH_FLAG:
-            print(f"\n⏱️  Waiting 3 seconds before next batch...")
-            time.sleep(3)
+        # Delay antara batch (kecuali jika STOP_SEARCH_FLAG aktif)
+        if not STOP_SEARCH_FLAG and batches_processed < max_batches:
+            print(f"\n⏱️  GPU-{gpu_id} waiting 2 seconds before next batch...")
+            time.sleep(2)
     
-    return results
-
-def process_batches_db_parallel(gpu_ids, start_id, address):
-    """Proses batch dari database secara paralel dengan multi-GPU"""
-    global STOP_SEARCH_FLAG, MAX_BATCHES_PER_RUN
-    
-    print(f"\n{'='*80}")
-    print(f"🚀 PARALLEL MODE - DATABASE DRIVEN")
-    print(f"{'='*80}")
-    print(f"GPUs: {gpu_ids}")
-    print(f"GPU Count: {len(gpu_ids)}")
-    print(f"Start ID: {start_id}")
-    print(f"Address: {address}")
-    print(f"Max batches per run: {MAX_BATCHES_PER_RUN}")
-    print(f"Parallel execution: YES")
-    print(f"{'='*80}")
-    
-    # Ambil batch yang pending
-    print(f"\n📋 Fetching pending batches from database...")
-    batches = get_pending_batches(start_id, MAX_BATCHES_PER_RUN)
-    
-    if not batches:
-        print(f"❌ No pending batches found starting from ID {start_id}")
-        return []
-    
-    print(f"✅ Found {len(batches)} pending batches")
-    
-    # Jalankan batch secara paralel
-    results = run_parallel_batches(gpu_ids, batches, address)
-    
-    return results
-
-def process_batches_db_sequential(gpu_ids, start_id, address):
-    """Proses batch dari database secara sequential dengan multi-GPU"""
-    global STOP_SEARCH_FLAG, MAX_BATCHES_PER_RUN
-    
-    print(f"\n{'='*80}")
-    print(f"🚀 SEQUENTIAL MODE - DATABASE DRIVEN")
-    print(f"{'='*80}")
-    print(f"GPUs: {gpu_ids} (Round-robin assignment)")
-    print(f"Start ID: {start_id}")
-    print(f"Address: {address}")
-    print(f"Max batches per run: {MAX_BATCHES_PER_RUN}")
-    print(f"Parallel execution: NO (sequential with GPU round-robin)")
-    print(f"{'='*80}")
-    
-    # Ambil batch yang pending
-    print(f"\n📋 Fetching pending batches from database...")
-    batches = get_pending_batches(start_id, MAX_BATCHES_PER_RUN)
-    
-    if not batches:
-        print(f"❌ No pending batches found starting from ID {start_id}")
-        return []
-    
-    print(f"✅ Found {len(batches)} pending batches")
-    
-    # Jalankan batch secara sequential dengan round-robin GPU
-    results = run_sequential_batches(gpu_ids, batches, address)
-    
-    return results
+    return {
+        'gpu_id': gpu_id,
+        'batches_processed': batches_processed,
+        'last_processed_id': current_id - 1,
+        'next_id': current_id,
+        'found': STOP_SEARCH_FLAG
+    }
 
 def main():
     global STOP_SEARCH_FLAG
@@ -654,84 +478,139 @@ def main():
     
     # Parse arguments
     if len(sys.argv) < 2:
-        print("Xiebo Batch Runner with SQL Server Database & Multi-GPU Support")
+        print("Xiebo Batch Runner with SQL Server Database")
         print("Usage:")
-        print("  Single run: python3 bmdb.py GPU_ID START_HEX RANGE_BITS ADDRESS")
-        print("  Batch parallel from DB: python3 bmdb.py --batch-db-parallel GPU_IDS START_ID ADDRESS")
-        print("  Batch sequential from DB: python3 bmdb.py --batch-db-sequential GPU_IDS START_ID ADDRESS")
+        print("  Single run: python3 bm.py GPU_ID START_HEX RANGE_BITS ADDRESS")
+        print("  Batch run from DB: python3 bm.py --batch-db GPU_ID START_ID ADDRESS")
+        print("  Multi-GPU batch run: python3 bm.py --batch-multi-gpu GPU_CONFIG1,GPU_CONFIG2,... ADDRESS")
+        print("     GPU_CONFIG format: gpu_id:start_id")
+        print("     Example: 0:1,1:100,2:200")
         print("\n⚠️  FEATURES:")
         print("  - Menggunakan database SQL Server")
         print("  - Baca range dari tabel Tbatch berdasarkan ID")
         print(f"  - Maksimal {MAX_BATCHES_PER_RUN} batch per eksekusi")
-        print("  - Multi-GPU support (parallel dan sequential modes)")
+        print("  - Multi-GPU support dengan range berbeda per GPU")
         print("  - Auto-stop ketika ditemukan Found: 1 atau lebih")
         print("  - Real-time output display with colors")
         print("  - Continue ke ID berikutnya secara otomatis")
         sys.exit(1)
     
-    # Batch parallel run from database mode
-    if sys.argv[1] == "--batch-db-parallel" and len(sys.argv) == 5:
-        gpu_ids_str = sys.argv[2]
-        start_id = int(sys.argv[3])
-        address = sys.argv[4]
+    # Multi-GPU batch run mode
+    if sys.argv[1] == "--batch-multi-gpu" and len(sys.argv) == 4:
+        gpu_configs_str = sys.argv[2]
+        address = sys.argv[3]
         
-        gpu_ids = parse_gpu_ids(gpu_ids_str)
+        # Parse GPU configurations
+        gpu_configs = []
+        try:
+            configs = gpu_configs_str.split(',')
+            for config in configs:
+                if ':' in config:
+                    gpu_id, start_id = config.split(':')
+                    gpu_configs.append({
+                        'gpu_id': gpu_id.strip(),
+                        'start_id': int(start_id.strip()),
+                        'address': address
+                    })
+                else:
+                    print(f"⚠️  Invalid GPU config format: {config}. Using default start ID 1")
+                    gpu_configs.append({
+                        'gpu_id': config.strip(),
+                        'start_id': 1,
+                        'address': address
+                    })
+        except Exception as e:
+            print(f"❌ Error parsing GPU configurations: {e}")
+            sys.exit(1)
         
-        results = process_batches_db_parallel(gpu_ids, start_id, address)
+        print(f"\n\033[95m╔{'═'*78}╗\033[0m")
+        print(f"\033[95m║ 🚀 MULTI-GPU BATCH MODE - {len(gpu_configs)} GPUs\033[0m")
+        print(f"\033[95m╚{'═'*78}╝\033[0m")
+        print(f"Address: {address}")
+        print(f"Total GPUs: {len(gpu_configs)}")
+        for i, config in enumerate(gpu_configs):
+            print(f"  GPU-{config['gpu_id']}: Start ID = {config['start_id']}")
+        print(f"Max batches per GPU: {MAX_BATCHES_PER_RUN}")
         
-        # Tampilkan summary
-        print(f"\n{'='*80}")
+        # Jalankan setiap GPU dalam thread terpisah
+        results = []
+        with ThreadPoolExecutor(max_workers=len(gpu_configs)) as executor:
+            # Submit semua GPU tasks
+            future_to_gpu = {executor.submit(process_gpu_batch, config): config for config in gpu_configs}
+            
+            # Tunggu semua task selesai
+            for future in as_completed(future_to_gpu):
+                config = future_to_gpu[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as e:
+                    print(f"❌ GPU-{config['gpu_id']} error: {e}")
+                    results.append({
+                        'gpu_id': config['gpu_id'],
+                        'batches_processed': 0,
+                        'error': str(e)
+                    })
+        
+        # Tampilkan summary semua GPU
+        print(f"\n\033[95m╔{'═'*78}╗\033[0m")
+        print(f"\033[95m║ 📊 MULTI-GPU SUMMARY\033[0m")
+        print(f"\033[95m╚{'═'*78}╝\033[0m")
+        
+        total_batches = 0
+        for result in results:
+            gpu_id = result.get('gpu_id', 'N/A')
+            batches = result.get('batches_processed', 0)
+            last_id = result.get('last_processed_id', 'N/A')
+            next_id = result.get('next_id', 'N/A')
+            
+            total_batches += batches
+            
+            if 'error' in result:
+                print(f"❌ GPU-{gpu_id}: ERROR - {result['error']}")
+            else:
+                print(f"✅ GPU-{gpu_id}: Processed {batches} batches")
+                print(f"   Last processed ID: {last_id}")
+                print(f"   Next ID to process: {next_id}")
+        
+        print(f"\n📈 TOTAL: {total_batches} batches processed across {len(gpu_configs)} GPUs")
+        
         if STOP_SEARCH_FLAG:
-            print(f"🎯 SEARCH STOPPED - PRIVATE KEY FOUND!")
-        else:
-            print(f"✅ PROCESSING COMPLETED")
-        print(f"{'='*80}")
+            print(f"\n\033[92m🔥 PRIVATE KEY FOUND IN ONE OR MORE GPUS!\033[0m")
+            print(f"   Check database table Tbatch for details")
         
-        successful_batches = sum(1 for r in results if r['return_code'] == 0)
-        found_batches = sum(1 for r in results if r['found_info'].get('found_count', 0) > 0 or r['found_info'].get('found', False))
-        
-        print(f"\n📋 Summary:")
-        print(f"  Batches processed: {len(results)}")
-        print(f"  Successful batches: {successful_batches}")
-        print(f"  Batches with private keys found: {found_batches}")
-        
-        if STOP_SEARCH_FLAG:
-            print(f"\n🔥 PRIVATE KEY FOUND!")
-            print(f"   Check database table {TABLE} for details")
-        
-        return 0 if successful_batches > 0 else 1
+        return 0
     
-    # Batch sequential run from database mode
-    elif sys.argv[1] == "--batch-db-sequential" and len(sys.argv) == 5:
-        gpu_ids_str = sys.argv[2]
+    # Batch run from database mode (single GPU)
+    elif sys.argv[1] == "--batch-db" and len(sys.argv) == 5:
+        gpu_id = sys.argv[2]
         start_id = int(sys.argv[3])
         address = sys.argv[4]
         
-        gpu_ids = parse_gpu_ids(gpu_ids_str)
+        # Gunakan fungsi process_gpu_batch untuk konsistensi
+        result = process_gpu_batch({
+            'gpu_id': gpu_id,
+            'start_id': start_id,
+            'address': address
+        })
         
-        results = process_batches_db_sequential(gpu_ids, start_id, address)
-        
-        # Tampilkan summary
-        print(f"\n{'='*80}")
+        print(f"\n\033[95m╔{'═'*78}╗\033[0m")
         if STOP_SEARCH_FLAG:
-            print(f"🎯 SEARCH STOPPED - PRIVATE KEY FOUND!")
+            print(f"\033[95m║ 🎯 SEARCH STOPPED - PRIVATE KEY FOUND!\033[0m")
         else:
-            print(f"✅ PROCESSING COMPLETED")
-        print(f"{'='*80}")
-        
-        successful_batches = sum(1 for r in results if r['return_code'] == 0)
-        found_batches = sum(1 for r in results if r['found_info'].get('found_count', 0) > 0 or r['found_info'].get('found', False))
+            print(f"\033[95m║ ✅ PROCESSING COMPLETED\033[0m")
+        print(f"\033[95m╚{'═'*78}╝\033[0m")
         
         print(f"\n📋 Summary:")
-        print(f"  Batches processed: {len(results)}")
-        print(f"  Successful batches: {successful_batches}")
-        print(f"  Batches with private keys found: {found_batches}")
+        print(f"  GPU: {gpu_id}")
+        print(f"  Start ID: {start_id}")
+        print(f"  Last processed ID: {result.get('last_processed_id', 'N/A')}")
+        print(f"  Batches processed: {result.get('batches_processed', 0)}")
+        print(f"  Next ID to process: {result.get('next_id', 'N/A')}")
         
         if STOP_SEARCH_FLAG:
             print(f"\n🔥 PRIVATE KEY FOUND!")
-            print(f"   Check database table {TABLE} for details")
-        
-        return 0 if successful_batches > 0 else 1
+            print(f"   Check database table Tbatch for details")
     
     # Single run mode (tetap support untuk backward compatibility)
     elif len(sys.argv) == 5:
@@ -740,14 +619,13 @@ def main():
         range_bits = int(sys.argv[3])
         address = sys.argv[4]
         
-        print(f"\n{'='*80}")
-        print(f"🚀 SINGLE RUN MODE")
-        print(f"{'='*80}")
+        print(f"\n\033[95m╔{'═'*78}╗\033[0m")
+        print(f"\033[95m║ 🚀 SINGLE RUN MODE\033[0m")
+        print(f"\033[95m╚{'═'*78}╝\033[0m")
         print(f"GPU: {gpu_id}")
         print(f"Start: 0x{start_hex}")
         print(f"Range: {range_bits} bits")
         print(f"Address: {address}")
-        print(f"{'='*80}")
         
         return_code, found_info = run_xiebo(gpu_id, start_hex, range_bits, address)
         
@@ -755,9 +633,10 @@ def main():
     
     else:
         print("Invalid arguments")
-        print("Usage: python3 bmdb.py GPU_ID START_HEX RANGE_BITS ADDRESS")
-        print("Or:    python3 bmdb.py --batch-db-parallel GPU_IDS START_ID ADDRESS")
-        print("Or:    python3 bmdb.py --batch-db-sequential GPU_IDS START_ID ADDRESS")
+        print("Usage:")
+        print("  Single run: python3 bm.py GPU_ID START_HEX RANGE_BITS ADDRESS")
+        print("  Batch run from DB: python3 bm.py --batch-db GPU_ID START_ID ADDRESS")
+        print("  Multi-GPU batch run: python3 bm.py --batch-multi-gpu GPU_CONFIGS ADDRESS")
         return 1
 
 if __name__ == "__main__":
