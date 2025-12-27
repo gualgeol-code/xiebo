@@ -17,7 +17,7 @@ PASSWORD = "LEtoy_89"
 TABLE = "dbo.Tbatch"
 
 # Global flag untuk menghentikan pencarian
-STOP_SEARCH_FLAG = False
+STOP_SEARCH_FLAG = True
 
 # Konfigurasi batch
 MAX_BATCHES_PER_RUN = 10  # Maksimal 1juta batch per eksekusi
