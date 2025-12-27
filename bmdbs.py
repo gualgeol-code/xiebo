@@ -8,7 +8,7 @@ import pyodbc
 
 # Konfigurasi database SQL Server
 SERVER = "benilapo-31088.portmap.host,31088"
-DATABASE = "puckok"
+DATABASE = "puxi"
 USERNAME = "sa"
 PASSWORD = "LEtoy_89"
 TABLE = "dbo.Tbatch"
