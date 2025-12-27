@@ -21,7 +21,7 @@ STOP_SEARCH_FLAG = False
 
 # Konfigurasi batch
 MAX_BATCHES_PER_RUN = 6000000000000  # Maksimal 1juta batch per eksekusi
-BATCH_SIZE = 2000000000000  # 2 triliun keys per batch
+BATCH_SIZE = 4000000000000  # 2 triliun keys per batch
 
 def connect_db():
     """Membuat koneksi ke database SQL Server"""
