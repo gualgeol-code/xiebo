@@ -11,7 +11,7 @@ from datetime import datetime
 
 # Konfigurasi database SQL Server
 SERVER = "benilapo-31088.portmap.host,31088"
-DATABASE = "puck"
+DATABASE = "puckok"
 USERNAME = "sa"
 PASSWORD = "LEtoy_89"
 TABLE = "dbo.Tbatch"
@@ -20,8 +20,8 @@ TABLE = "dbo.Tbatch"
 STOP_SEARCH_FLAG = False
 
 # Konfigurasi batch
-MAX_BATCHES_PER_RUN = 3  # Maksimal 1juta batch per eksekusi
-BATCH_SIZE = 1000000000000  # 2 triliun keys per batch
+MAX_BATCHES_PER_RUN = 10  # Maksimal 1juta batch per eksekusi
+BATCH_SIZE = 4000000000000  # 2 triliun keys per batch
 
 def connect_db():
     """Membuat koneksi ke database SQL Server"""
