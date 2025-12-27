@@ -300,8 +300,78 @@ def read_current_batches_as_dict():
     
     return batch_dict
 
+def verify_xiebo_compatibility_silent(start_hex, end_hex):
+    """Verifikasi bahwa start dan end kompatibel dengan xiebo (silent mode)"""
+    try:
+        start_int = int(start_hex, 16)
+        end_int = int(end_hex, 16)
+        
+        keys_count = end_int - start_int + 1
+        
+        # Xiebo hanya menerima range sebagai 2^N
+        # Cek apakah keys_count adalah power of 2
+        log2_val = math.log2(keys_count)
+        
+        return log2_val.is_integer()
+            
+    except Exception:
+        return False
+
+def verify_xiebo_compatibility(start_hex, end_hex, batch_id=None):
+    """Verifikasi bahwa start dan end kompatibel dengan xiebo (verbose mode)"""
+    try:
+        start_int = int(start_hex, 16)
+        end_int = int(end_hex, 16)
+        
+        keys_count = end_int - start_int + 1
+        
+        # Xiebo hanya menerima range sebagai 2^N
+        # Cek apakah keys_count adalah power of 2
+        log2_val = math.log2(keys_count)
+        
+        if batch_id:
+            safe_print(f"\n🔍 XIEBO COMPATIBILITY CHECK - Batch {batch_id}:")
+        else:
+            safe_print(f"\n🔍 XIEBO COMPATIBILITY CHECK:")
+            
+        safe_print(f"   Start: 0x{start_hex} ({start_int:,})")
+        safe_print(f"   End: 0x{end_hex} ({end_int:,})")
+        safe_print(f"   Keys count: {keys_count:,}")
+        safe_print(f"   Log2(keys_count): {log2_val:.6f}")
+        
+        if log2_val.is_integer():
+            range_bits = int(log2_val)
+            safe_print(f"   ✅ PERFECT: keys_count = 2^{range_bits} (compatible with xiebo)")
+            safe_print(f"   Xiebo will use: -range {range_bits}")
+            safe_print(f"   Expected xiebo end: 0x{format(start_int + (1 << range_bits) - 1, 'x')}")
+            return True, range_bits
+        else:
+            required_bits = int(math.ceil(log2_val))
+            expected_end = start_int + (1 << required_bits) - 1
+            extra_keys = (1 << required_bits) - keys_count
+            
+            safe_print(f"   ⚠️  WARNING: keys_count is NOT power of 2")
+            safe_print(f"   Xiebo will use: -range {required_bits}")
+            safe_print(f"   Xiebo will search: {1 << required_bits:,} keys")
+            safe_print(f"   Xiebo expected end: 0x{format(expected_end, 'x')}")
+            safe_print(f"   Database end: 0x{end_hex}")
+            safe_print(f"   Extra keys searched: {extra_keys:,}")
+            safe_print(f"   Difference: {expected_end - end_int:,}")
+            
+            # If the difference is small, it's acceptable
+            if extra_keys <= 1000:
+                safe_print(f"   ✅ ACCEPTABLE: Small difference ({extra_keys:,} extra keys)")
+                return True, required_bits
+            else:
+                safe_print(f"   ❌ PROBLEM: Large difference ({extra_keys:,} extra keys)")
+                return False, required_bits
+            
+    except Exception as e:
+        safe_print(f"❌ Error verifying xiebo compatibility: {e}")
+        return False, 0
+
 def write_batches_from_dict(batch_dict, create_new_file=False):
-    """Menulis batch file dari dictionary"""
+    """Menulis batch file dari dictionary - DENGAN VERIFIKASI XIEBO"""
     global CURRENT_LOG_FILE
     
     try:
@@ -319,17 +389,41 @@ def write_batches_from_dict(batch_dict, create_new_file=False):
         for batch_id in sorted(batch_dict.keys(), key=lambda x: int(x) if x.isdigit() else x):
             rows.append(batch_dict[batch_id])
         
+        # Verifikasi xiebo compatibility sebelum menulis
+        safe_print(f"\n🔍 VERIFYING XIEBO COMPATIBILITY FOR ALL BATCHES:")
+        
+        verified_count = 0
+        problematic_count = 0
+        problematic_batches = []
+        
+        for batch in rows:
+            batch_id = batch['batch_id']
+            is_compatible, _ = verify_xiebo_compatibility_silent(batch['start_hex'], batch['end_hex'])
+            
+            if is_compatible:
+                verified_count += 1
+            else:
+                problematic_count += 1
+                problematic_batches.append(batch_id)
+        
         # Tulis ke file dengan format tabel
         with open(CURRENT_LOG_FILE, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=BATCH_COLUMNS, delimiter='|')
             writer.writeheader()
             writer.writerows(rows)
         
-        safe_print(f"💾 Batch data saved to: {CURRENT_LOG_FILE}")
+        safe_print(f"\n💾 Batch data saved to: {CURRENT_LOG_FILE}")
         safe_print(f"📊 Total batches in file: {len(rows)}")
+        safe_print(f"✅ Xiebo-compatible batches: {verified_count}")
+        
+        if problematic_count > 0:
+            safe_print(f"⚠️  Problematic batches (not power of 2): {problematic_count}")
+            safe_print(f"   Batch IDs: {', '.join(problematic_batches[:10])}" + 
+                      ("..." if len(problematic_batches) > 10 else ""))
+            safe_print(f"   These batches may cause range mismatch with xiebo!")
         
         # Simpan ke Google Drive (dengan feedback) - HANYA upload file ini
-        safe_print(f"🔄 Saving to Google Drive...")
+        safe_print(f"\n🔄 Saving to Google Drive...")
         save_to_drive(silent=False)
         
     except Exception as e:
@@ -400,30 +494,49 @@ def load_next_batch_info():
         return None
 
 def calculate_range_bits(keys_count):
-    """Menghitung range bits yang benar untuk jumlah keys tertentu"""
+    """Menghitung range bits yang benar untuk jumlah keys tertentu - SAMA DENGAN XIEBO"""
     if keys_count <= 1:
         return 1
     
-    # Hitung log2 dari jumlah keys
+    # Xiebo menggunakan: range = 2^N
+    # Jadi kita perlu mencari N terkecil sehingga 2^N >= keys_count
     log2_val = math.log2(keys_count)
     
-    # Jika hasil log2 adalah bilangan bulat, gunakan nilai tersebut
-    # Jika tidak, gunakan floor + 1 (untuk mencakup semua keys)
-    if log2_val.is_integer():
-        return int(log2_val)
-    else:
-        return int(math.floor(log2_val)) + 1
+    # SELALU gunakan CEIL untuk memastikan semua keys tercakup
+    # Ini sesuai dengan cara xiebo bekerja
+    return int(math.ceil(log2_val))
+
+def adjust_batch_size_for_xiebo(batch_size):
+    """Sesuaikan batch size agar menjadi power of 2 (kompatibel dengan xiebo)"""
+    # Hitung range bits untuk batch size yang diminta
+    batch_range_bits = calculate_range_bits(batch_size)
+    
+    # Hitung batch size yang sesuai dengan 2^N
+    adjusted_size = 1 << batch_range_bits
+    
+    return adjusted_size, batch_range_bits
 
 def generate_batch_worker(args):
-    """Worker function untuk generate batch dalam thread"""
-    start_int, batch_size, end_int, start_batch_id, i = args
+    """Worker function untuk generate batch dalam thread - SESUAI XIEBO"""
+    start_int, adjusted_batch_size, batch_range_bits, end_int, start_batch_id, i = args
     batch_id = start_batch_id + i
-    batch_start = start_int + (i * batch_size)
-    batch_end = min(batch_start + batch_size, end_int + 1)
+    batch_start = start_int + (i * adjusted_batch_size)
+    
+    # Hitung batch_end berdasarkan batch size yang sudah disesuaikan
+    batch_end = min(batch_start + adjusted_batch_size, end_int + 1)
     batch_keys = batch_end - batch_start
     
+    # Pastikan end sesuai dengan xiebo: end = start + 2^N - 1
+    # Tapi juga pastikan tidak melebihi total end_int
+    if batch_end - 1 <= end_int:
+        batch_end_hex = format(batch_end - 1, 'x')  # end inklusif
+    else:
+        batch_end_hex = format(end_int, 'x')  # tidak melebihi total range
+    
     batch_start_hex = format(batch_start, 'x')
-    batch_end_hex = format(batch_end - 1, 'x')  # -1 karena end inklusif
+    
+    # Verifikasi bahwa range ini power of 2 (kecuali batch terakhir yang mungkin lebih kecil)
+    actual_keys = int(batch_end_hex, 16) - int(batch_start_hex, 16) + 1
     
     # Buat informasi batch (hanya 2 kolom)
     batch_info = {
@@ -432,17 +545,34 @@ def generate_batch_worker(args):
         'end_hex': batch_end_hex
     }
     
-    return batch_id, batch_info, batch_keys, i
+    return batch_id, batch_info, batch_keys, i, actual_keys
 
 def generate_batches_multithreaded(start_hex, range_bits, address, batch_size, start_batch_id=0, max_batches=None):
-    """Generate batch dari range hex menggunakan multithreading"""
+    """Generate batch dari range hex menggunakan multithreading - SESUAI XIEBO"""
     global CURRENT_LOG_FILE, stop_monitor
     
     start_int = int(start_hex, 16)
-    total_keys = 1 << range_bits
-    end_int = start_int + total_keys - 1
+    total_keys = 1 << range_bits  # Xiebo: total = 2^range_bits
+    end_int = start_int + total_keys - 1  # Xiebo: end = start + 2^N - 1
     
-    total_batches_needed = math.ceil(total_keys / batch_size)
+    # SESUAIKAN BATCH SIZE AGAR POWER OF 2 (kompatibel dengan xiebo)
+    adjusted_batch_size, batch_range_bits = adjust_batch_size_for_xiebo(batch_size)
+    
+    safe_print(f"\n{'='*60}")
+    safe_print(f"GENERATING BATCHES - XIEBO COMPATIBLE MODE")
+    safe_print(f"{'='*60}")
+    safe_print(f"🚀 MAIN RANGE CONFIGURATION:")
+    safe_print(f"   Start: 0x{start_hex}")
+    safe_print(f"   Range bits: {range_bits} bits (Xiebo format)")
+    safe_print(f"   Total keys: {total_keys:,} (2^{range_bits})")
+    safe_print(f"   End: 0x{format(end_int, 'x')} (start + 2^{range_bits} - 1)")
+    safe_print(f"\n📏 BATCH SIZE CONFIGURATION:")
+    safe_print(f"   Requested batch size: {batch_size:,}")
+    safe_print(f"   Calculated batch range bits: {batch_range_bits}")
+    safe_print(f"   Adjusted batch size: {adjusted_batch_size:,} (2^{batch_range_bits})")
+    safe_print(f"   Difference: {adjusted_batch_size - batch_size:,} keys")
+    
+    total_batches_needed = math.ceil(total_keys / adjusted_batch_size)
     
     # Limit jumlah batch jika ada max_batches
     if max_batches is not None:
@@ -450,21 +580,13 @@ def generate_batches_multithreaded(start_hex, range_bits, address, batch_size, s
     else:
         batches_to_generate = total_batches_needed
     
-    safe_print(f"\n{'='*60}")
-    safe_print(f"GENERATING BATCHES - MULTITHREADED ({MAX_THREADS} threads)")
-    safe_print(f"{'='*60}")
-    safe_print(f"Start: 0x{start_hex}")
-    safe_print(f"Range: {range_bits} bits")
-    safe_print(f"Total keys: {total_keys:,}")
-    safe_print(f"End: 0x{format(end_int, 'x')}")
-    safe_print(f"Batch size: {batch_size:,} keys")
-    safe_print(f"Address: {address}")
-    safe_print(f"Total batches needed: {total_batches_needed:,}")
-    safe_print(f"Batches to generate: {batches_to_generate}")
-    safe_print(f"Starting batch ID: {start_batch_id}")
-    safe_print(f"Output format: {BATCH_COLUMNS}")
-    safe_print(f"Output file: {CURRENT_LOG_FILE if CURRENT_LOG_FILE else 'Auto-determined'}")
-    safe_print(f"Threads: {MAX_THREADS}")
+    safe_print(f"\n📊 BATCH GENERATION PLAN:")
+    safe_print(f"   Address: {address}")
+    safe_print(f"   Total batches needed: {total_batches_needed:,}")
+    safe_print(f"   Batches to generate this run: {batches_to_generate}")
+    safe_print(f"   Starting batch ID: {start_batch_id}")
+    safe_print(f"   Output format: {BATCH_COLUMNS}")
+    safe_print(f"   Threads: {MAX_THREADS}")
     safe_print(f"{'='*60}")
     
     # Tentukan apakah perlu membuat file baru
@@ -507,8 +629,22 @@ def generate_batches_multithreaded(start_hex, range_bits, address, batch_size, s
                     # Cek jika ada progress update
                     while not progress_queue.empty():
                         try:
-                            batch_id, batch_idx, batch_keys = progress_queue.get_nowait()
+                            batch_id, batch_idx, batch_keys, actual_keys = progress_queue.get_nowait()
                             completed_count += 1
+                            
+                            # Tampilkan info batch pertama dan setiap 100 batch
+                            if completed_count == 1 or completed_count % 100 == 0 or completed_count == total:
+                                # Verifikasi xiebo compatibility untuk batch ini
+                                with file_lock:
+                                    if str(batch_id) in batch_dict:
+                                        batch_data = batch_dict[str(batch_id)]
+                                        is_power_of_2 = verify_xiebo_compatibility_silent(
+                                            batch_data['start_hex'], 
+                                            batch_data['end_hex']
+                                        )
+                                        status = "✅" if is_power_of_2 else "⚠️"
+                                        safe_print(f"   {status} Batch {batch_id}: {batch_keys:,} keys")
+                            
                         except queue.Empty:
                             break
                     
@@ -544,11 +680,15 @@ def generate_batches_multithreaded(start_hex, range_bits, address, batch_size, s
     monitor_thread = threading.Thread(target=progress_monitor, args=(batches_to_generate,))
     monitor_thread.start()
     
+    # Statistik
+    power_of_2_count = 0
+    non_power_of_2_count = 0
+    
     try:
         # Gunakan ThreadPoolExecutor untuk parallel processing
         with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
             # Prepare arguments untuk semua batch
-            batch_args = [(start_int, batch_size, end_int, start_batch_id, i) 
+            batch_args = [(start_int, adjusted_batch_size, batch_range_bits, end_int, start_batch_id, i) 
                          for i in range(batches_to_generate)]
             
             # Submit semua tasks
@@ -557,14 +697,28 @@ def generate_batches_multithreaded(start_hex, range_bits, address, batch_size, s
             # Process hasil
             for future in as_completed(futures):
                 try:
-                    batch_id, batch_info, batch_keys, batch_idx = future.result()
+                    batch_id, batch_info, batch_keys, batch_idx, actual_keys = future.result()
+                    
+                    # Cek apakah batch ini power of 2
+                    is_power_of_2 = verify_xiebo_compatibility_silent(
+                        batch_info['start_hex'], 
+                        batch_info['end_hex']
+                    )
+                    
+                    if is_power_of_2:
+                        power_of_2_count += 1
+                    else:
+                        non_power_of_2_count += 1
+                        # Batch terakhir mungkin bukan power of 2, itu normal
+                        if batch_idx == batches_to_generate - 1:
+                            safe_print(f"   ℹ️  Last batch {batch_id}: {actual_keys:,} keys (may not be power of 2)")
                     
                     # Simpan hasil ke dictionary dengan lock untuk thread safety
                     with file_lock:
                         batch_dict[str(batch_id)] = batch_info
                     
                     # Kirim progress update ke queue
-                    progress_queue.put((batch_id, batch_idx, batch_keys))
+                    progress_queue.put((batch_id, batch_idx, batch_keys, actual_keys))
                     
                 except Exception as e:
                     safe_print(f"\n❌ Error generating batch: {e}")
@@ -597,17 +751,22 @@ def generate_batches_multithreaded(start_hex, range_bits, address, batch_size, s
     elapsed_time = time.time() - start_time
     batches_per_second = batches_to_generate / elapsed_time if elapsed_time > 0 else 0
     
-    safe_print(f"\n⏱️  Generation statistics:")
+    safe_print(f"\n{'='*60}")
+    safe_print(f"📊 GENERATION STATISTICS:")
     safe_print(f"   Total time: {elapsed_time:.2f} seconds")
     safe_print(f"   Batches per second: {batches_per_second:.2f}")
     safe_print(f"   Threads used: {MAX_THREADS}")
+    safe_print(f"   Power of 2 batches: {power_of_2_count}")
+    safe_print(f"   Non-power of 2 batches: {non_power_of_2_count}")
+    safe_print(f"   Adjusted batch size: {adjusted_batch_size:,} (2^{batch_range_bits})")
+    safe_print(f"{'='*60}")
     
     # Tulis batch ke file
     write_batches_from_dict(batch_dict, create_new_file)
     
     # Simpan info batch berikutnya jika belum selesai semua
     if batches_to_generate < total_batches_needed:
-        next_start_int = start_int + (batches_to_generate * batch_size)
+        next_start_int = start_int + (batches_to_generate * adjusted_batch_size)
         next_start_hex = format(next_start_int, 'x')
         
         save_next_batch_info(
@@ -635,10 +794,13 @@ def generate_batches_single_thread(start_hex, range_bits, address, batch_size, s
     global CURRENT_LOG_FILE
     
     start_int = int(start_hex, 16)
-    total_keys = 1 << range_bits
-    end_int = start_int + total_keys - 1
+    total_keys = 1 << range_bits  # Xiebo: total = 2^range_bits
+    end_int = start_int + total_keys - 1  # Xiebo: end = start + 2^N - 1
     
-    total_batches_needed = math.ceil(total_keys / batch_size)
+    # SESUAIKAN BATCH SIZE AGAR POWER OF 2
+    adjusted_batch_size, batch_range_bits = adjust_batch_size_for_xiebo(batch_size)
+    
+    total_batches_needed = math.ceil(total_keys / adjusted_batch_size)
     
     # Limit jumlah batch jika ada max_batches
     if max_batches is not None:
@@ -647,8 +809,10 @@ def generate_batches_single_thread(start_hex, range_bits, address, batch_size, s
         batches_to_generate = total_batches_needed
     
     safe_print(f"\n{'='*60}")
-    safe_print(f"GENERATING BATCHES - SINGLE THREAD")
+    safe_print(f"GENERATING BATCHES - SINGLE THREAD (Xiebo Compatible)")
     safe_print(f"{'='*60}")
+    safe_print(f"   Original batch size: {batch_size:,}")
+    safe_print(f"   Adjusted batch size: {adjusted_batch_size:,} (2^{batch_range_bits})")
     
     # Tentukan apakah perlu membuat file baru
     create_new_file = False
@@ -676,12 +840,20 @@ def generate_batches_single_thread(start_hex, range_bits, address, batch_size, s
     
     for i in range(batches_to_generate):
         batch_id = start_batch_id + i
-        batch_start = start_int + (i * batch_size)
-        batch_end = min(batch_start + batch_size, end_int + 1)
+        batch_start = start_int + (i * adjusted_batch_size)
+        batch_end = min(batch_start + adjusted_batch_size, end_int + 1)
         batch_keys = batch_end - batch_start
         
+        # Pastikan end sesuai dengan xiebo: end = start + 2^N - 1
+        if batch_end - 1 <= end_int:
+            batch_end_hex = format(batch_end - 1, 'x')  # end inklusif
+        else:
+            batch_end_hex = format(end_int, 'x')  # tidak melebihi total range
+        
         batch_start_hex = format(batch_start, 'x')
-        batch_end_hex = format(batch_end - 1, 'x')  # -1 karena end inklusif
+        
+        # Verifikasi xiebo compatibility
+        is_power_of_2 = verify_xiebo_compatibility_silent(batch_start_hex, batch_end_hex)
         
         # Buat informasi batch (hanya 2 kolom)
         batch_info = {
@@ -696,8 +868,10 @@ def generate_batches_single_thread(start_hex, range_bits, address, batch_size, s
         if (i + 1) % 10 == 0 or i == batches_to_generate - 1:
             elapsed = time.time() - start_time
             batches_per_sec = (i + 1) / elapsed if elapsed > 0 else 0
-            safe_print(f"✅ Generated batch {i+1}/{batches_to_generate}: ID={batch_id}, "
-                      f"Speed={batches_per_sec:.1f} batches/sec")
+            
+            status = "✅" if is_power_of_2 else "⚠️"
+            safe_print(f"{status} Generated batch {i+1}/{batches_to_generate}: ID={batch_id}, "
+                      f"Keys={batch_keys:,}, Speed={batches_per_sec:.1f} batches/sec")
     
     elapsed_time = time.time() - start_time
     safe_print(f"\n⏱️  Generation time: {elapsed_time:.2f} seconds")
@@ -707,7 +881,7 @@ def generate_batches_single_thread(start_hex, range_bits, address, batch_size, s
     
     # Simpan info batch berikutnya jika belum selesai semua
     if batches_to_generate < total_batches_needed:
-        next_start_int = start_int + (batches_to_generate * batch_size)
+        next_start_int = start_int + (batches_to_generate * adjusted_batch_size)
         next_start_hex = format(next_start_int, 'x')
         
         save_next_batch_info(
@@ -720,91 +894,6 @@ def generate_batches_single_thread(start_hex, range_bits, address, batch_size, s
         )
     
     return total_batches_needed, batches_to_generate, batch_dict
-
-def display_batch_summary():
-    """Menampilkan summary batch yang telah digenerate"""
-    batch_dict = read_all_batches_as_dict()
-    
-    if len(batch_dict) == 0:
-        safe_print("📭 No batch data found")
-        return
-    
-    try:
-        total_batches = len(batch_dict)
-        
-        # Hitung total file batch
-        batch_files = []
-        for file in os.listdir('.'):
-            if file.startswith(LOG_FILE_PREFIX) and file.endswith(LOG_FILE_EXT):
-                batch_files.append(file)
-        
-        safe_print(f"\n{'='*60}")
-        safe_print(f"📊 BATCH SUMMARY")
-        safe_print(f"{'='*60}")
-        safe_print(f"Total batches generated: {total_batches}")
-        safe_print(f"Total batch files: {len(batch_files)}")
-        
-        # Tampilkan daftar file batch dengan detail
-        if batch_files:
-            batch_files.sort()
-            safe_print(f"\n📁 Batch files:")
-            total_file_size = 0
-            total_file_batches = 0
-            
-            for file in batch_files:
-                file_size = os.path.getsize(file)
-                total_file_size += file_size
-                
-                # Hitung batch dalam file
-                file_batches = 0
-                try:
-                    with open(file, 'r') as f:
-                        reader = csv.DictReader(f, delimiter='|')
-                        file_batches = sum(1 for _ in reader)
-                    total_file_batches += file_batches
-                except:
-                    pass
-                
-                marker = " 🟢" if file == get_latest_batch_file() else ""
-                safe_print(f"  {file}: {file_batches} batches, {file_size:,} bytes{marker}")
-            
-            safe_print(f"\n📊 File totals: {total_file_batches} batches, {total_file_size:,} bytes ({total_file_size/1024/1024:.2f} MB)")
-            safe_print(f"🟢 Current/latest file: {get_latest_batch_file()}")
-        
-        # Tampilkan format file
-        safe_print(f"\n📋 File format: {BATCH_COLUMNS}")
-        
-        # Tampilkan 5 batch pertama dan terakhir
-        safe_print(f"\n📋 First 5 batches:")
-        sorted_ids = sorted([int(id) for id in batch_dict.keys() if id.isdigit()])
-        for i in range(min(5, len(sorted_ids))):
-            batch_id = str(sorted_ids[i])
-            batch = batch_dict[batch_id]
-            safe_print(f"  ID: {batch_id}, Start: 0x{batch['start_hex']}, End: 0x{batch['end_hex']}")
-        
-        if len(sorted_ids) > 5:
-            safe_print(f"\n📋 Last 5 batches:")
-            for i in range(max(0, len(sorted_ids)-5), len(sorted_ids)):
-                batch_id = str(sorted_ids[i])
-                batch = batch_dict[batch_id]
-                safe_print(f"  ID: {batch_id}, Start: 0x{batch['start_hex']}, End: 0x{batch['end_hex']}")
-        
-        # Info next batch jika ada
-        next_info = load_next_batch_info()
-        if next_info:
-            safe_print(f"\n💾 NEXT BATCH INFO:")
-            safe_print(f"  Next start: 0x{next_info.get('next_start_hex')}")
-            safe_print(f"  Progress: {next_info.get('batches_generated')}/{next_info.get('total_batches')} batches")
-            safe_print(f"  Current batch file: {next_info.get('current_batch_file', 'Unknown')}")
-            safe_print(f"  Current batch index: {next_info.get('current_batch_index', 'Unknown')}")
-            safe_print(f"  To continue: python3 genb.py --continue")
-        else:
-            safe_print(f"\n✅ All batches completed!")
-        
-        safe_print(f"{'='*60}")
-        
-    except Exception as e:
-        safe_print(f"❌ Error displaying summary: {e}")
 
 def continue_generation_auto(batch_size, max_batches=None):
     """Lanjutkan generate batch dari state yang tersimpan secara otomatis sampai selesai TANPA KONFIRMASI"""
@@ -972,6 +1061,113 @@ def continue_generation_single(batch_size, max_batches=None, use_multithread=Tru
     
     display_batch_summary()
 
+def display_batch_summary():
+    """Menampilkan summary batch yang telah digenerate"""
+    batch_dict = read_all_batches_as_dict()
+    
+    if len(batch_dict) == 0:
+        safe_print("📭 No batch data found")
+        return
+    
+    try:
+        total_batches = len(batch_dict)
+        
+        # Hitung total file batch
+        batch_files = []
+        for file in os.listdir('.'):
+            if file.startswith(LOG_FILE_PREFIX) and file.endswith(LOG_FILE_EXT):
+                batch_files.append(file)
+        
+        safe_print(f"\n{'='*60}")
+        safe_print(f"📊 BATCH SUMMARY (Xiebo Compatible)")
+        safe_print(f"{'='*60}")
+        safe_print(f"Total batches generated: {total_batches}")
+        safe_print(f"Total batch files: {len(batch_files)}")
+        
+        # Hitung berapa banyak batch yang kompatibel dengan xiebo
+        xiebo_compatible = 0
+        non_xiebo_compatible = 0
+        
+        for batch_id, batch in batch_dict.items():
+            if verify_xiebo_compatibility_silent(batch['start_hex'], batch['end_hex']):
+                xiebo_compatible += 1
+            else:
+                non_xiebo_compatible += 1
+        
+        safe_print(f"\n🔍 XIEBO COMPATIBILITY ANALYSIS:")
+        safe_print(f"   Compatible batches (power of 2): {xiebo_compatible}")
+        safe_print(f"   Non-compatible batches: {non_xiebo_compatible}")
+        safe_print(f"   Compatibility rate: {xiebo_compatible/total_batches*100:.1f}%")
+        
+        if non_xiebo_compatible > 0:
+            safe_print(f"   ⚠️  Warning: {non_xiebo_compatible} batches may cause range mismatch!")
+        
+        # Tampilkan daftar file batch dengan detail
+        if batch_files:
+            batch_files.sort()
+            safe_print(f"\n📁 Batch files:")
+            total_file_size = 0
+            total_file_batches = 0
+            
+            for file in batch_files:
+                file_size = os.path.getsize(file)
+                total_file_size += file_size
+                
+                # Hitung batch dalam file
+                file_batches = 0
+                try:
+                    with open(file, 'r') as f:
+                        reader = csv.DictReader(f, delimiter='|')
+                        file_batches = sum(1 for _ in reader)
+                    total_file_batches += file_batches
+                except:
+                    pass
+                
+                marker = " 🟢" if file == get_latest_batch_file() else ""
+                safe_print(f"  {file}: {file_batches} batches, {file_size:,} bytes{marker}")
+            
+            safe_print(f"\n📊 File totals: {total_file_batches} batches, {total_file_size:,} bytes ({total_file_size/1024/1024:.2f} MB)")
+            safe_print(f"🟢 Current/latest file: {get_latest_batch_file()}")
+        
+        # Tampilkan format file
+        safe_print(f"\n📋 File format: {BATCH_COLUMNS}")
+        
+        # Tampilkan 5 batch pertama dan terakhir dengan verifikasi
+        safe_print(f"\n📋 First 5 batches (with xiebo compatibility check):")
+        sorted_ids = sorted([int(id) for id in batch_dict.keys() if id.isdigit()])
+        for i in range(min(5, len(sorted_ids))):
+            batch_id = str(sorted_ids[i])
+            batch = batch_dict[batch_id]
+            is_compatible = verify_xiebo_compatibility_silent(batch['start_hex'], batch['end_hex'])
+            status = "✅" if is_compatible else "⚠️"
+            safe_print(f"  {status} ID: {batch_id}, Start: 0x{batch['start_hex']}, End: 0x{batch['end_hex']}")
+        
+        if len(sorted_ids) > 5:
+            safe_print(f"\n📋 Last 5 batches (with xiebo compatibility check):")
+            for i in range(max(0, len(sorted_ids)-5), len(sorted_ids)):
+                batch_id = str(sorted_ids[i])
+                batch = batch_dict[batch_id]
+                is_compatible = verify_xiebo_compatibility_silent(batch['start_hex'], batch['end_hex'])
+                status = "✅" if is_compatible else "⚠️"
+                safe_print(f"  {status} ID: {batch_id}, Start: 0x{batch['start_hex']}, End: 0x{batch['end_hex']}")
+        
+        # Info next batch jika ada
+        next_info = load_next_batch_info()
+        if next_info:
+            safe_print(f"\n💾 NEXT BATCH INFO:")
+            safe_print(f"  Next start: 0x{next_info.get('next_start_hex')}")
+            safe_print(f"  Progress: {next_info.get('batches_generated')}/{next_info.get('total_batches')} batches")
+            safe_print(f"  Current batch file: {next_info.get('current_batch_file', 'Unknown')}")
+            safe_print(f"  Current batch index: {next_info.get('current_batch_index', 'Unknown')}")
+            safe_print(f"  To continue: python3 genb.py --continue")
+        else:
+            safe_print(f"\n✅ All batches completed!")
+        
+        safe_print(f"{'='*60}")
+        
+    except Exception as e:
+        safe_print(f"❌ Error displaying summary: {e}")
+
 def export_to_csv(output_file="batches.csv"):
     """Export batch data ke format CSV untuk analisis"""
     batch_dict = read_all_batches_as_dict()
@@ -1024,11 +1220,12 @@ def display_file_info():
     batch_files.sort()
     
     safe_print(f"\n{'='*60}")
-    safe_print(f"📁 BATCH FILES INFORMATION")
+    safe_print(f"📁 BATCH FILES INFORMATION (Xiebo Compatible)")
     safe_print(f"{'='*60}")
     
     total_size = 0
     total_batches = 0
+    total_xiebo_compatible = 0
     
     for file in batch_files:
         try:
@@ -1037,18 +1234,25 @@ def display_file_info():
             
             # Hitung jumlah batch dalam file
             batch_count = 0
+            xiebo_compatible_count = 0
             if os.path.exists(file):
                 with open(file, 'r') as f:
                     reader = csv.DictReader(f, delimiter='|')
-                    batch_count = sum(1 for _ in reader)
+                    for row in reader:
+                        batch_count += 1
+                        if verify_xiebo_compatibility_silent(row['start_hex'], row['end_hex']):
+                            xiebo_compatible_count += 1
+                
                 total_batches += batch_count
+                total_xiebo_compatible += xiebo_compatible_count
             
             marker = " 🟢" if file == get_latest_batch_file() else ""
+            compatibility_rate = xiebo_compatible_count/batch_count*100 if batch_count > 0 else 0
+            
             safe_print(f"\n📄 {file}{marker}:")
             safe_print(f"   Size: {file_size:,} bytes ({file_size/1024:.2f} KB)")
             safe_print(f"   Batches: {batch_count}")
-            
-            # Tampilkan format
+            safe_print(f"   Xiebo compatible: {xiebo_compatible_count}/{batch_count} ({compatibility_rate:.1f}%)")
             safe_print(f"   Format: {BATCH_COLUMNS}")
             
         except Exception as e:
@@ -1059,6 +1263,7 @@ def display_file_info():
     safe_print(f"   Files: {len(batch_files)}")
     safe_print(f"   Total size: {total_size:,} bytes ({total_size/1024/1024:.2f} MB)")
     safe_print(f"   Total batches: {total_batches}")
+    safe_print(f"   Total xiebo compatible: {total_xiebo_compatible}/{total_batches} ({total_xiebo_compatible/total_batches*100:.1f}%)")
     safe_print(f"   Latest file: {get_latest_batch_file()}")
     safe_print(f"   Threads available: {MAX_THREADS}")
     safe_print(f"{'='*60}")
@@ -1074,13 +1279,15 @@ def display_file_info():
 
 def main():
     """Main function untuk generate batch"""
-    global CURRENT_LOG_FILE, stop_monitor
+    global CURRENT_LOG_FILE, stop_monitor, BATCH_SIZE, MAX_THREADS
     
     print("\n" + "="*60)
-    print("BATCH GENERATOR TOOL - MINIMAL FORMAT")
+    print("BATCH GENERATOR TOOL - XIEBO COMPATIBLE MODE")
     print("="*60)
     print("Tool untuk generate batch dari range hex")
     print(f"Output format: {BATCH_COLUMNS}")
+    print(f"🔧 AUTO-ADJUST: Batch size adjusted to power of 2 for xiebo compatibility")
+    print(f"✅ VERIFICATION: Checks xiebo compatibility for all batches")
     print(f"Auto-continue until completion (no confirmation)")
     print(f"Multiple batch files with auto-incrementing index")
     print(f"Smart Google Drive upload (only latest files)")
@@ -1101,6 +1308,7 @@ def main():
         print("  File info: python3 genb.py --info")
         print("\nOptions:")
         print(f"  Default batch size: {BATCH_SIZE:,} keys")
+        print(f"  Note: Batch size will be adjusted to nearest power of 2 for xiebo compatibility")
         print(f"  Default address: {DEFAULT_ADDRESS}")
         print(f"  Max batches per run: {MAX_BATCHES_PER_RUN:,}")
         print(f"  Max threads: {MAX_THREADS}")
@@ -1145,7 +1353,12 @@ def main():
             
             # Update global BATCH_SIZE
             globals()['BATCH_SIZE'] = new_size
+            
+            # Show adjusted size for xiebo compatibility
+            adjusted_size, bits = adjust_batch_size_for_xiebo(new_size)
             print(f"✅ Batch size set to {new_size:,} keys")
+            print(f"📏 For xiebo compatibility, will use: {adjusted_size:,} keys (2^{bits})")
+            print(f"   Difference: {adjusted_size - new_size:,} keys")
         except ValueError:
             print("❌ Invalid batch size. Must be an integer.")
             sys.exit(1)
@@ -1196,6 +1409,7 @@ def main():
         CURRENT_LOG_FILE = get_current_batch_file()
         print(f"📁 Starting with batch file: {CURRENT_LOG_FILE}")
         print(f"🚀 Using MULTITHREADED mode with {MAX_THREADS} threads")
+        print(f"🔧 Batch size will be adjusted to power of 2 for xiebo compatibility")
         print(f"⚠️  WARNING: Auto-continue mode activated. Process will run until completion WITHOUT confirmation.")
         print(f"   Press Ctrl+C to stop at any time.\n")
         
@@ -1242,6 +1456,7 @@ def main():
         CURRENT_LOG_FILE = None
         
         print(f"🚀 Using MULTITHREADED mode with {MAX_THREADS} threads")
+        print(f"🔧 Batch size will be adjusted to power of 2 for xiebo compatibility")
         
         try:
             # Generate batches menggunakan multithreading
