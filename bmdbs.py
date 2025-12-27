@@ -109,10 +109,18 @@ def calculate_range_bits(start_hex, end_hex):
         start_int = int(start_hex, 16)
         end_int = int(end_hex, 16)
         
-        # Hitung jumlah keys
+        # Debug: tampilkan nilai untuk verifikasi
+        print(f"🔍 DEBUG calculate_range_bits:")
+        print(f"   start_hex: {start_hex} = {start_int:,}")
+        print(f"   end_hex: {end_hex} = {end_int:,}")
+        
+        # Hitung jumlah keys - end_hex dari genbnew.py sudah inklusif
         keys_count = end_int - start_int + 1
         
+        print(f"   keys_count: {keys_count:,}")
+        
         if keys_count <= 1:
+            print(f"   range_bits: 1")
             return 1
         
         # Hitung log2 dari jumlah keys
@@ -121,9 +129,24 @@ def calculate_range_bits(start_hex, end_hex):
         # Jika hasil log2 adalah bilangan bulat, gunakan nilai tersebut
         # Jika tidak, gunakan floor + 1 (untuk mencakup semua keys)
         if log2_val.is_integer():
-            return int(log2_val)
+            result = int(log2_val)
         else:
-            return int(math.floor(log2_val)) + 1
+            result = int(math.floor(log2_val)) + 1
+        
+        print(f"   range_bits: {result}")
+        print(f"   expected total keys: {1 << result:,}")
+        print(f"   ratio: {keys_count/(1 << result):.6f}")
+        
+        # Verifikasi: range bits harus mencakup semua keys
+        expected_keys = 1 << result
+        if keys_count > expected_keys:
+            print(f"   ⚠️  PERINGATAN: keys_count > 2^{result}")
+            print(f"      Consider using range_bits = {result + 1}")
+        elif keys_count < expected_keys:
+            # Ini normal karena kita menggunakan ceil(log2)
+            print(f"   ℹ️  INFO: keys_count < 2^{result} (using ceil)")
+        
+        return result
             
     except Exception as e:
         print(f"❌ Error calculating range bits: {e}")
@@ -377,6 +400,38 @@ def run_xiebo(gpu_id, start_hex, range_bits, address, batch_id=None):
         
         return 1, {'found': False}
 
+def verify_batch_range(start_hex, end_hex, batch_id=None):
+    """Fungsi tambahan untuk verifikasi range batch"""
+    try:
+        start_int = int(start_hex, 16)
+        end_int = int(end_hex, 16)
+        
+        keys_count = end_int - start_int + 1
+        
+        print(f"\n🔍 BATCH RANGE VERIFICATION:")
+        print(f"   Batch ID: {batch_id if batch_id is not None else 'N/A'}")
+        print(f"   Start (hex): 0x{start_hex}")
+        print(f"   End (hex): 0x{end_hex}")
+        print(f"   Start (int): {start_int:,}")
+        print(f"   End (int): {end_int:,}")
+        print(f"   Keys count: {keys_count:,}")
+        
+        # Cek apakah sesuai dengan batch size yang diharapkan (4 triliun)
+        expected_batch_size = 4000000000000
+        if keys_count != expected_batch_size:
+            print(f"   ⚠️  PERINGATAN: Ukuran batch tidak sesuai!")
+            print(f"      Expected: {expected_batch_size:,}")
+            print(f"      Actual: {keys_count:,}")
+            print(f"      Selisih: {abs(expected_batch_size - keys_count):,}")
+            return False
+        else:
+            print(f"   ✅ Batch size valid: {keys_count:,} keys")
+            return True
+            
+    except Exception as e:
+        print(f"❌ Error verifying batch range: {e}")
+        return False
+
 def main():
     global STOP_SEARCH_FLAG
     
@@ -396,6 +451,7 @@ def main():
         print("  - Auto-stop ketika ditemukan Found: 1 atau lebih")
         print("  - Real-time output display with colors")
         print("  - Continue ke ID berikutnya secara otomatis")
+        print("  - Enhanced range verification and debug output")
         sys.exit(1)
     
     # Batch run from database mode
@@ -444,15 +500,29 @@ def main():
             start_range = batch['start_range']
             end_range = batch['end_range']
             
-            # Hitung range bits
+            # Verifikasi range batch sebelum menghitung range bits
+            print(f"\n{'─'*60}")
+            print(f"🔍 VERIFYING BATCH RANGE")
+            print(f"{'─'*60}")
+            range_valid = verify_batch_range(start_range, end_range, batch_id=current_id)
+            
+            if not range_valid:
+                print(f"⚠️  Range tidak valid untuk batch ID {current_id}. Skipping.")
+                current_id += 1
+                continue
+            
+            # Hitung range bits dengan debug output
+            print(f"\n{'─'*60}")
+            print(f"🧮 CALCULATING RANGE BITS")
+            print(f"{'─'*60}")
             range_bits = calculate_range_bits(start_range, end_range)
             
             # Run batch
             print(f"\n{'='*80}")
             print(f"▶️  BATCH {batches_processed + 1} (ID: {current_id})")
             print(f"{'='*80}")
-            print(f"Start Range: {start_range}")
-            print(f"End Range: {end_range}")
+            print(f"Start Range: 0x{start_range}")
+            print(f"End Range: 0x{end_range}")
             print(f"Range Bits: {range_bits}")
             print(f"Address: {address}")
             print(f"{'='*80}")
