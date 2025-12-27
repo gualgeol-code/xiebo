@@ -17,7 +17,7 @@ TABLE = "dbo.Tbatch"
 STOP_SEARCH_FLAG = False
 
 # Konfigurasi batch
-MAX_BATCHES_PER_RUN = 1000000000000  # Maksimal 1juta batch per eksekusi
+MAX_BATCHES_PER_RUN = 4000000000000  # Maksimal 1juta batch per eksekusi
 
 def connect_db():
     """Membuat koneksi ke database SQL Server"""
