@@ -1164,6 +1164,147 @@ def display_file_info():
         safe_print(f"   Current file: {next_info.get('current_batch_file', 'Unknown')}")
         safe_print(f"   File index: {next_info.get('current_batch_index', 'Unknown')}")
 
+# ============================================================
+# PERBAIKAN DAN PENAMBAHAN FUNGSI DARI genbnew.py
+# ============================================================
+
+def get_next_batch_from_file():
+    """Mendapatkan informasi batch berikutnya dari file, atau membuat yang baru jika tidak ada"""
+    if not os.path.exists(NEXT_BATCH_FILE):
+        return None
+    
+    try:
+        info = {}
+        with open(NEXT_BATCH_FILE, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    info[key] = value
+        
+        # Validasi data yang penting
+        required_keys = ['next_start_hex', 'original_range_bits', 'batches_generated', 'total_batches']
+        for key in required_keys:
+            if key not in info:
+                safe_print(f"⚠️ Missing required key in nextbatch.txt: {key}")
+                return None
+        
+        return info
+    except Exception as e:
+        safe_print(f"❌ Error reading nextbatch.txt: {e}")
+        return None
+
+def update_progress_display(elapsed, completed, total, speed, eta):
+    """Update progress display dengan format yang lebih baik"""
+    percent = (completed / total * 100) if total > 0 else 0
+    safe_print(f"📊 Progress: {completed:,}/{total:,} batches ({percent:.1f}%) | "
+              f"Speed: {speed:.1f} batches/sec | "
+              f"Elapsed: {elapsed:.0f}s | "
+              f"ETA: {eta:.0f}s", end='\r')
+
+def check_disk_space(min_space_mb=100):
+    """Cek ketersediaan disk space sebelum melanjutkan"""
+    try:
+        stat = os.statvfs('.')
+        free_space = stat.f_frsize * stat.f_bavail  # in bytes
+        free_space_mb = free_space / (1024 * 1024)
+        
+        if free_space_mb < min_space_mb:
+            safe_print(f"⚠️ Low disk space: {free_space_mb:.1f} MB available (minimum {min_space_mb} MB)")
+            return False
+        return True
+    except Exception:
+        return True  # Skip check if error
+
+def validate_start_hex(start_hex):
+    """Validasi format start hex"""
+    try:
+        val = int(start_hex, 16)
+        if val < 0:
+            return False, "Start hex must be positive"
+        return True, f"Valid start hex: 0x{start_hex}"
+    except ValueError:
+        return False, "Invalid hex format"
+
+def validate_range_bits(range_bits):
+    """Validasi range bits"""
+    if not isinstance(range_bits, int):
+        return False, "Range bits must be integer"
+    if range_bits <= 0 or range_bits > 256:
+        return False, "Range bits must be between 1 and 256"
+    return True, f"Valid range: {range_bits} bits"
+
+def get_system_info():
+    """Dapatkan informasi sistem untuk debugging"""
+    import platform
+    info = {
+        'system': platform.system(),
+        'release': platform.release(),
+        'python_version': platform.python_version(),
+        'processor': platform.processor(),
+        'cwd': os.getcwd(),
+        'free_disk_mb': 0
+    }
+    
+    try:
+        stat = os.statvfs('.')
+        free_space = stat.f_frsize * stat.f_bavail
+        info['free_disk_mb'] = free_space / (1024 * 1024)
+    except:
+        pass
+    
+    return info
+
+def graceful_shutdown():
+    """Shutdown graceful dengan cleanup semua resources"""
+    global stop_monitor
+    safe_print("\n🔴 Shutting down gracefully...")
+    stop_monitor.set()
+    time.sleep(0.5)
+    
+    # Simpan state terakhir jika ada
+    if os.path.exists(NEXT_BATCH_FILE):
+        safe_print("💾 Saving current state before shutdown...")
+        # Backup nextbatch.txt
+        backup_file = f"{NEXT_BATCH_FILE}.backup"
+        try:
+            shutil.copy2(NEXT_BATCH_FILE, backup_file)
+            safe_print(f"✅ State backed up to {backup_file}")
+        except Exception as e:
+            safe_print(f"⚠️ Could not backup state: {e}")
+
+def auto_backup_files():
+    """Buat backup otomatis dari file penting"""
+    try:
+        # Backup nextbatch.txt
+        if os.path.exists(NEXT_BATCH_FILE):
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_file = f"backup/nextbatch_{timestamp}.txt"
+            
+            # Buat folder backup jika belum ada
+            os.makedirs("backup", exist_ok=True)
+            
+            shutil.copy2(NEXT_BATCH_FILE, backup_file)
+            
+            # Hapus backup lama (simpan hanya 5 terbaru)
+            backup_files = []
+            for f in os.listdir("backup"):
+                if f.startswith("nextbatch_") and f.endswith(".txt"):
+                    backup_files.append(f)
+            
+            backup_files.sort(reverse=True)
+            for old_file in backup_files[5:]:
+                try:
+                    os.remove(os.path.join("backup", old_file))
+                except:
+                    pass
+            
+            return True
+    except Exception as e:
+        safe_print(f"⚠️ Auto-backup failed: {e}")
+    
+    return False
+
 def main():
     """Main function untuk generate batch"""
     global CURRENT_LOG_FILE, stop_monitor
@@ -1179,6 +1320,20 @@ def main():
     print(f"🚀 MULTITHREADED with {MAX_THREADS} threads")
     print(f"🛡️  Thread-safe with proper cleanup")
     print("="*60)
+    
+    # Tambahkan fitur auto-backup
+    if auto_backup_files():
+        print("✅ Auto-backup enabled")
+    
+    # Cek disk space
+    if not check_disk_space():
+        print("⚠️ Warning: Low disk space detected")
+    
+    # Tampilkan info sistem
+    sys_info = get_system_info()
+    print(f"💻 System: {sys_info['system']} {sys_info['release']}")
+    print(f"🐍 Python: {sys_info['python_version']}")
+    print(f"💾 Disk: {sys_info['free_disk_mb']:.1f} MB free")
     
     # Pemeriksaan awal saat program dijalankan
     if os.path.exists(NEXT_BATCH_FILE):
@@ -1206,6 +1361,7 @@ def main():
         print("  Set batch size: python3 genb.py --set-size SIZE")
         print("  Set thread count: python3 genb.py --set-threads NUM")
         print("  File info: python3 genb.py --info")
+        print("  System info: python3 genb.py --sysinfo")
         print("\nOptions:")
         print(f"  Default batch size: {BATCH_SIZE:,} keys")
         print(f"  Default address: {DEFAULT_ADDRESS}")
@@ -1218,6 +1374,16 @@ def main():
         print(f"  --continue: Will run continuously WITHOUT asking for confirmation")
         print(f"  Press Ctrl+C to stop at any time")
         sys.exit(1)
+    
+    # System info mode
+    if sys.argv[1] == "--sysinfo":
+        print("\n" + "="*60)
+        print("SYSTEM INFORMATION")
+        print("="*60)
+        for key, value in sys_info.items():
+            print(f"{key}: {value}")
+        print("="*60)
+        sys.exit(0)
     
     # Show file info mode
     if sys.argv[1] == "--info":
@@ -1309,8 +1475,10 @@ def main():
         try:
             continue_generation_auto(BATCH_SIZE, MAX_BATCHES_PER_RUN)
         except KeyboardInterrupt:
+            graceful_shutdown()
             print("\n\n⚠️ Process stopped by user")
         except Exception as e:
+            graceful_shutdown()
             print(f"\n❌ Error: {e}")
         
         # Cleanup sebelum exit
@@ -1331,18 +1499,15 @@ def main():
         else:
             address = DEFAULT_ADDRESS
         
-        # Validasi input
-        try:
-            start_int = int(start_hex, 16)
-            if start_int < 0:
-                print("❌ Start hex must be positive")
-                sys.exit(1)
-        except ValueError:
-            print("❌ Invalid start hex format")
+        # Validasi input dengan fungsi yang diperbaiki
+        is_valid_hex, hex_msg = validate_start_hex(start_hex)
+        if not is_valid_hex:
+            print(f"❌ {hex_msg}")
             sys.exit(1)
         
-        if range_bits <= 0 or range_bits > 256:
-            print("❌ Range bits must be between 1 and 256")
+        is_valid_range, range_msg = validate_range_bits(range_bits)
+        if not is_valid_range:
+            print(f"❌ {range_msg}")
             sys.exit(1)
         
         # Set current batch file (akan dibuat baru)
@@ -1377,8 +1542,10 @@ def main():
             display_batch_summary()
             
         except KeyboardInterrupt:
+            graceful_shutdown()
             print("\n\n⚠️ Generation interrupted by user")
         except Exception as e:
+            graceful_shutdown()
             print(f"\n❌ Error: {e}")
         
         # Cleanup sebelum exit
@@ -1392,6 +1559,7 @@ def main():
         print("Or:    python3 genb.py --continue-single-st (single run, single thread)")
         print("Or:    python3 genb.py --summary")
         print("Or:    python3 genb.py --info")
+        print("Or:    python3 genb.py --sysinfo")
         sys.exit(1)
 
 if __name__ == "__main__":
